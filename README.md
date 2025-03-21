@@ -5,7 +5,7 @@ A command-line tool for code generation and editing using Google's Gemini models
 ## Installation
 
 ```bash
-pip install codagent
+pip install .
 ```
 
 ## Prerequisites
