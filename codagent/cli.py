@@ -18,6 +18,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.styles import Style as PromptStyle
 import glob
+import subprocess
 
 # Initialize colorama
 colorama.init()
@@ -74,6 +75,25 @@ You can generate and modify code based on user requests using special syntax for
 
 WORKING DIRECTORY: {current_dir}
 
+AGENT BEHAVIOR:
+You are an autonomous agent that decides when a response is complete. You can:
+1. Continue generating multiple responses if you need more space or time to think
+2. End your response with a [FINAL] tag when you've completed your full answer
+
+If you don't include a [FINAL] tag at the end of your response, you'll be prompted to continue.
+IMPORTANT: Simply add [FINAL] at the very end of your response when you've completed your answer.
+
+Example multi-response sequence:
+=== Response ===
+I'll help you create that file structure. First, let's start with the main module...
+
+=== Response ===
+Now we need to implement the helper functions...
+
+=== Response ===
+Everything is now complete! I've created all the necessary files for your project.
+Let me know if you need any adjustments. [FINAL]
+
 ⚠️ EXTREMELY IMPORTANT - CODE EXACTNESS REQUIREMENT ⚠️
 When generating file operations, you MUST:
 1. PRESERVE EXACT INDENTATION of the original code
@@ -118,19 +138,19 @@ Example with preserved indentation:
     console.log("Hello, CodAgent!");
 [/REPLACE]
 
-Notice that the indentation (spaces before the console.log line) is preserved in both the old and new content!
+3. To EXECUTE terminal commands:
+[TERMINAL]
+command_to_execute
+[/TERMINAL]
 
-IMPORTANT GUIDELINES:
+Example:
+[TERMINAL]
+ls -la
+[/TERMINAL]
 
-- Be precise and explicit about file paths and content
-- Always provide complete, functional code
-- For replacements, include enough context to uniquely identify the location
-- Explain your changes and reasoning clearly
-- When appropriate, suggest multiple alternatives
-- Always follow best practices for the relevant programming language
-- If necessary, provide step-by-step instructions for the user to follow after applying changes
-- Remember that the user will see all changes before they're applied
-- If you're uncertain about something, ask for clarification
+IMPORTANT: Terminal commands are ONLY executed with explicit user permission.
+The user will be prompted to review and approve each command before execution.
+Use terminal commands responsibly and explain what each command does before using it.
 
 INDENTATION HANDLING - CRITICAL INFORMATION:
 
@@ -157,48 +177,10 @@ INDENTATION HANDLING - CRITICAL INFORMATION:
    - If replacing code inside a code block, include enough context (at least the first line of the block)
    - When uncertain, include more context rather than less
 
-EXAMPLES OF INDENTATION-AWARE REPLACEMENTS:
-
-GOOD (includes exact indentation):
-[REPLACE=main.py]
-    def calculate_total(items):
-        total = 0
-        for item in items:
-            total += item.price
-        return total
-[TO]
-    def calculate_total(items):
-        return sum(item.price for item in items)
-[/REPLACE]
-
-GOOD (indentation-free for CodAgent to handle):
-[REPLACE=utils.py]
-def parse_data(input_string):
-    parts = input_string.split(',')
-    return parts
-[TO]
-def parse_data(input_string):
-    parts = input_string.split(',')
-    return [part.strip() for part in parts]
-[/REPLACE]
-
-BAD (mismatched indentation):
-[REPLACE=app.py]
-def process():
-    data = load_data()
-    result = transform(data)
-    return result
-[TO]
-def process():
-data = load_data()
-result = transform(data)
-return result
-[/REPLACE]
-
 USER WORKFLOW:
 1. User describes what they need
-2. You respond with explanations and file operations enclosed in the special syntax
-3. CodAgent will show the user a preview of changes with color-coded diffs
+2. You respond with explanations and file operations or terminal commands enclosed in the special syntax
+3. CodAgent will show the user a preview of changes with color-coded diffs or terminal commands to execute
 4. User confirms or rejects the changes
 
 Your primary goal is to help the user accomplish their coding tasks efficiently and correctly.
@@ -209,8 +191,78 @@ NEVER USE ``` in your response.
 """
     return system_prompt
 
+def parse_final_response(response_text):
+    """Parse the response to check if it contains the FINAL tag at the end."""
+    # Check if the response ends with [FINAL] tag
+    if response_text.strip().endswith("[FINAL]"):
+        # Remove the [FINAL] tag and return True to indicate this is final
+        return response_text.strip()[:-7].strip(), True
+    
+    # No FINAL tag found, return the original response and False
+    return response_text, False
+
+def parse_terminal_commands(response_text):
+    """Parse the response text to extract terminal commands."""
+    terminal_commands = []
+    
+    # Find TERMINAL commands
+    terminal_pattern = r"\[TERMINAL\](.*?)\[/TERMINAL\]"
+    for match in re.finditer(terminal_pattern, response_text, re.DOTALL):
+        command = match.group(1).strip()
+        terminal_commands.append(command)
+    
+    return terminal_commands
+
+def execute_terminal_command(command):
+    """Execute a terminal command and capture its output."""
+    print(f"\n{Fore.YELLOW}Executing command:{Style.RESET_ALL} {command}")
+    
+    try:
+        # Execute the command and capture output
+        result = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Print command output
+        if result.stdout:
+            print(f"\n{Fore.CYAN}Command output:{Style.RESET_ALL}")
+            print(result.stdout)
+        
+        # Print any errors
+        if result.stderr:
+            print(f"\n{Fore.RED}Command errors:{Style.RESET_ALL}")
+            print(result.stderr)
+        
+        # Print status
+        if result.returncode == 0:
+            print(f"\n{Fore.GREEN}Command executed successfully (return code: 0){Style.RESET_ALL}")
+        else:
+            print(f"\n{Fore.RED}Command failed with return code: {result.returncode}{Style.RESET_ALL}")
+        
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "returncode": result.returncode
+        }
+    except Exception as e:
+        print(f"\n{Fore.RED}Error executing command: {e}{Style.RESET_ALL}")
+        return {
+            "stdout": "",
+            "stderr": str(e),
+            "returncode": -1
+        }
+
 def parse_file_operations(response_text):
     """Parse the response text to extract file operations."""
+    # First, check if there's a FINAL tag and remove it
+    if response_text.strip().endswith("[FINAL]"):
+        # Remove FINAL tag before parsing file operations
+        response_text = response_text.strip()[:-7].strip()
+    
     file_operations = []
     
     # Find CREATE operations
@@ -924,27 +976,77 @@ exit, quit, q       - Exit CodAgent.
             
             final_prompt += f"USER QUERY: {user_input}"
             
-            # Show progress bar while waiting for response
-            with tqdm(total=100, desc="Thinking", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-                for i in range(10):
-                    time.sleep(0.1)
-                    pbar.update(10)
+            # Store complete responses
+            all_responses = []
+            is_final = False
+            
+            while not is_final:
+                # Show progress bar while waiting for response
+                with tqdm(total=100, desc="Thinking", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
+                    for i in range(10):
+                        time.sleep(0.1)
+                        pbar.update(10)
+                    
+                    # Send message with system prompt for every query
+                    response = model.generate_content(final_prompt)
+                    response_text = response.text
+                    
+                    # Complete the progress bar
+                    pbar.update(100 - pbar.n)
                 
-                # Send message with system prompt for every query
-                response = model.generate_content(final_prompt)
-                response_text = response.text
+                # Check if this is the final response
+                cleaned_response, is_final = parse_final_response(response_text)
                 
-                # Complete the progress bar
-                pbar.update(100 - pbar.n)
+                # Display the response
+                print(f"\n{Fore.GREEN}=== Response ==={Style.RESET_ALL}")
+                print(cleaned_response)
+                
+                # Store the complete response for history
+                all_responses.append(cleaned_response)
+                
+                if not is_final:
+                    # If not final, update the prompt to continue the conversation
+                    final_prompt += f"\n\nMODEL: {response_text}\n\nCONTINUE:"
             
-            # Add model response to conversation history
-            conversation_history.append({"role": "model", "content": response_text})
+            # Combine all responses for history
+            full_response = "\n\n".join(all_responses)
+            conversation_history.append({"role": "model", "content": full_response})
             
-            print(f"\n{Fore.GREEN}=== Response ==={Style.RESET_ALL}")
-            print(response_text)
+            # Parse terminal commands
+            terminal_commands = parse_terminal_commands(full_response)
             
-            # Parse and process file operations
-            file_operations = parse_file_operations(response_text)
+            # Execute terminal commands if any
+            if terminal_commands:
+                print(f"\n{Fore.CYAN}=== Terminal Commands ==={Style.RESET_ALL}")
+                for idx, cmd in enumerate(terminal_commands, 1):
+                    print(f"{Fore.YELLOW}[{idx}] {cmd}{Style.RESET_ALL}")
+                
+                confirm = input(f"\n{Fore.RED}WARNING: Terminal commands may modify your system. Execute? (y/n): {Style.RESET_ALL}")
+                if confirm.lower().startswith('y'):
+                    command_results = []
+                    for cmd in terminal_commands:
+                        result = execute_terminal_command(cmd)
+                        command_results.append({
+                            "command": cmd,
+                            "result": result
+                        })
+                    
+                    # Add command results to the next prompt to give feedback to the model
+                    command_feedback = "\n\nTERMINAL COMMAND RESULTS:\n"
+                    for result in command_results:
+                        command_feedback += f"Command: {result['command']}\n"
+                        command_feedback += f"Return code: {result['result']['returncode']}\n"
+                        if result['result']['stdout']:
+                            command_feedback += f"Output: {result['result']['stdout']}\n"
+                        if result['result']['stderr']:
+                            command_feedback += f"Errors: {result['result']['stderr']}\n"
+                    
+                    final_prompt += command_feedback
+                else:
+                    print(f"{Fore.YELLOW}Terminal commands were not executed.{Style.RESET_ALL}")
+            
+            # Parse and process file operations from the complete response
+            file_operations = parse_file_operations(full_response)
             if file_operations:
                 if preview_changes(file_operations):
                     # Update file history based on operations
@@ -976,7 +1078,7 @@ exit, quit, q       - Exit CodAgent.
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(description="CodAgent - AI-powered code generation tool")
-    parser.add_argument("--model", default="gemini-1.5-pro", help="Google Gemini model to use")
+    parser.add_argument("--model", default="gemini-2.5-pro-exp-03-25", help="Google Gemini model to use")
     
     args = parser.parse_args()
     
