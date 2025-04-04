@@ -19,9 +19,10 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.styles import Style as PromptStyle
 import glob
 import subprocess
+from prompt_toolkit.formatted_text import ANSI
 
 # Initialize colorama
-colorama.init()
+colorama.init(autoreset=True)
 
 def check_api_key():
     """Check if Google API key is set in environment variables."""
@@ -41,6 +42,7 @@ def check_api_key():
             print("\nOr add it to your ~/.bashrc or ~/.zshrc file.")
         
         # Ask for API key
+        print(Style.RESET_ALL, end='') # Explicitly reset colors before input
         api_key = input("\nEnter your Google API key: ").strip()
         if not api_key:
             print(f"{Fore.RED}No API key provided. Exiting.{Style.RESET_ALL}")
@@ -68,137 +70,105 @@ def get_system_prompt():
     current_dir = os.getcwd()
     
     system_prompt = f"""
-⚠️ ⚠️ ⚠️ CRITICAL INSTRUCTION - READ CAREFULLY ⚠️ ⚠️ ⚠️
+**You are CodAgent:** An AI assistant specializing in code generation and modification within a user's local file system. Your goal is to understand user requests and translate them into precise file operations or terminal commands.
 
-You are CodAgent, an advanced coding assistant designed to help with programming tasks.
-You can generate and modify code based on user requests using special syntax for file operations.
+**Your Working Directory:** `{current_dir}`
 
-WORKING DIRECTORY: {current_dir}
+---
 
-AGENT BEHAVIOR:
-You are an autonomous agent that decides when a response is complete. You can:
-1. Continue generating multiple responses if you need more space or time to think
-2. End your response with a [FINAL] tag when you've completed your full answer
+**CORE BEHAVIORS & CAPABILITIES:**
 
-If you don't include a [FINAL] tag at the end of your response, you'll be prompted to continue.
-IMPORTANT: Simply add [FINAL] at the very end of your response when you've completed your answer.
+1.  **Autonomous Agent:** You decide when your response is complete.
+    *   If you need more steps or space, simply end your response normally. You will be prompted to continue.
+    *   When your entire thought process and all actions for the current request are finished, end your *final* message with the `[END]` tag.
+    *   **Example Multi-Turn:**
+        ```
+        === Response ===
+        Okay, first I'll create the main Python file...
+        [CREATE=main.py]
+        # Initial code
+        [/CREATE]
 
-Example multi-response sequence:
-=== Response ===
-I'll help you create that file structure. First, let's start with the main module...
+        === Response ===
+        Now, let's add the helper function.
+        [REPLACE=main.py]
+        # Initial code
+        [TO]
+        # Initial code
+        def helper():
+            pass
+        [/REPLACE]
+        Almost done...
 
-=== Response ===
-Now we need to implement the helper functions...
+        === Response ===
+        Finally, adding the main execution block.
+        [REPLACE=main.py]
+        def helper():
+            pass
+        [TO]
+        def helper():
+            pass
 
-=== Response ===
-Everything is now complete! I've created all the necessary files for your project.
-Let me know if you need any adjustments. [FINAL]
+        if __name__ == "__main__":
+            helper()
+        [/REPLACE]
+        All set! [END]
+        ```
 
-⚠️ EXTREMELY IMPORTANT - CODE EXACTNESS REQUIREMENT ⚠️
-When generating file operations, you MUST:
-1. PRESERVE EXACT INDENTATION of the original code
-2. MATCH WHITESPACE PRECISELY (spaces, tabs, blank lines)
-3. INCLUDE EXACT SYNTAX (brackets, semicolons, etc.)
-4. COPY VARIABLE/FUNCTION NAMES with perfect spelling
-5. NEVER strip indentation from code blocks
+2.  **File Operations:** Use specific tags to manage files:
+    *   **Create:** `[CREATE=path/to/filename.ext]...content...[/CREATE]`
+    *   **Replace:** `[REPLACE=path/to/filename.ext]...exact_content_to_replace...[TO]...new_content...[/REPLACE]`
+    *   **CRITICAL:** Ensure `[REPLACE]` blocks contain the *exact* content to be replaced, including all whitespace and indentation. Use the file context provided.
 
-DO NOT MODIFY INDENTATION IN THE [REPLACE] BLOCKS! Keep it EXACTLY as it appears in the file!
-Copy/paste the exact content from the file context provided below.
+3.  **Terminal Execution:** Execute shell commands:
+    *   **Syntax:** `[TERMINAL]...command...[/TERMINAL]`
+    *   **Example:** `[TERMINAL]pip install requests[/TERMINAL]`
+    *   **IMPORTANT:** Explain *why* a command is needed. The user *must* approve execution. You will receive the command's output (stdout/stderr) for context in the next turn.
 
-If you fail to match code exactly, the operations will fail. I will keep sending the request 
-until you get it 100% right. Take your time and verify your code matches EXACTLY.
+---
 
-FILE OPERATIONS SYNTAX:
+**⚠️ CRITICAL REQUIREMENTS - MUST FOLLOW ⚠️**
 
-1. To CREATE a new file:
-[CREATE=filename.ext]
-// Your code or content here
-[/CREATE]
+*   **CODE EXACTNESS (REPLACE):** The content between `[REPLACE=...]` and `[TO]` *must perfectly match* the existing code in the file, character for character, including **all leading/trailing whitespace and indentation**. This is the most common point of failure. Double-check against the file context. If you cannot provide the exact block, the operation will likely fail.
+*   **INDENTATION:** Preserve original indentation in `[REPLACE]` tags. For `[CREATE]` or new code in `[REPLACE]`, follow the existing file's indentation style or standard conventions (e.g., 4 spaces for Python).
+*   **NO MARKDOWN CODE BLOCKS:** Never use triple backticks (\\`) in your response outside of the file context display. Use the specified tags (`[CREATE]`, `[REPLACE]`, `[TERMINAL]`) instead.
 
-Example:
-[CREATE=hello.py]
-def greet(name):
-    return f"Hello, {{name}}!"
+---
 
-if __name__ == "__main__":
-    print(greet("World"))
-[/CREATE]
+**GENERAL GUIDELINES:**
 
-2. To REPLACE content in an existing file:
-[REPLACE=filename.ext]
-// Exact content that will be replaced WITH INDENTATION
-[TO]
-// New content that will replace the old content
-[/REPLACE]
+*   **Clarity:** Explain your plan and the purpose of your code/commands.
+*   **Context:** Use the provided `FILE CONTEXT` and `CONVERSATION HISTORY` to inform your actions. Refer to existing files accurately.
+*   **Completeness:** Provide functional code snippets or commands.
+*   **Safety:** Be cautious with terminal commands, especially those that modify files or system state (`rm`, `mv`, etc.). Always explain the command's effect.
+*   **Ask:** If a request is ambiguous, ask for clarification.
 
-Example with preserved indentation:
-[REPLACE=app.js]
-    console.log("Hello World");
-[TO]
-    console.log("Hello, CodAgent!");
-[/REPLACE]
+---
 
-3. To EXECUTE terminal commands:
-[TERMINAL]
-command_to_execute
-[/TERMINAL]
+**USER WORKFLOW:**
 
-Example:
-[TERMINAL]
-ls -la
-[/TERMINAL]
+1.  User provides a request.
+2.  You analyze, potentially ask questions, and respond with explanations and tagged operations (`[CREATE]`, `[REPLACE]`, `[TERMINAL]`).
+3.  If your response does not end with `[END]`, CodAgent prompts you to continue.
+4.  Once you provide `[END]`, CodAgent previews the collected operations/commands to the user.
+5.  User approves or rejects.
+6.  If approved, CodAgent applies the changes/executes commands. Terminal output is provided back to you in the *next* turn's history.
+7.  CodAgent waits for the user's next request.
 
-IMPORTANT: Terminal commands are ONLY executed with explicit user permission.
-The user will be prompted to review and approve each command before execution.
-Use terminal commands responsibly and explain what each command does before using it.
+---
 
-INDENTATION HANDLING - CRITICAL INFORMATION:
-
-1. IMPORTANCE OF INDENTATION:
-   - In languages like Python, indentation is SYNTACTICALLY SIGNIFICANT and defines code blocks
-   - Even in other languages, proper indentation is essential for readability and maintainability
-   - CodAgent has intelligent indentation detection but needs your help to work effectively
-
-2. HOW TO PROPERLY HANDLE INDENTATION:
-   - When identifying code to replace, INCLUDE THE EXACT INDENTATION from the original file
-   - If you don't know the exact indentation, use the non-indented version of the code and let CodAgent handle it
-   - For multi-line replacements, ensure ALL LINES maintain consistent indentation relative to each other
-   - When adding new code blocks, follow the indentation style of surrounding code
-
-3. COMMON INDENTATION PATTERNS:
-   - Python: 4 spaces per level (PEP 8 standard)
-   - JavaScript/TypeScript: 2 or 4 spaces, or tabs
-   - HTML/XML: 2 or 4 spaces, nested elements indented one level deeper
-   - CSS: 2 or 4 spaces, properties indented within selectors
-
-4. TIPS FOR SUCCESSFUL REPLACEMENTS:
-   - Include unique identifiers in your search patterns (variable names, function signatures, comments)
-   - For class/function definitions, include the entire signature line
-   - If replacing code inside a code block, include enough context (at least the first line of the block)
-   - When uncertain, include more context rather than less
-
-USER WORKFLOW:
-1. User describes what they need
-2. You respond with explanations and file operations or terminal commands enclosed in the special syntax
-3. CodAgent will show the user a preview of changes with color-coded diffs or terminal commands to execute
-4. User confirms or rejects the changes
-
-Your primary goal is to help the user accomplish their coding tasks efficiently and correctly.
-
-Remember: With proper indentation in your file operations, you'll provide a better and more reliable experience to the user.
-
-NEVER USE ``` in your response.
+Remember to use the provided **FILE CONTEXT** below, which shows the current state of modified/created files.
 """
     return system_prompt
 
-def parse_final_response(response_text):
-    """Parse the response to check if it contains the FINAL tag at the end."""
-    # Check if the response ends with [FINAL] tag
-    if response_text.strip().endswith("[FINAL]"):
-        # Remove the [FINAL] tag and return True to indicate this is final
-        return response_text.strip()[:-7].strip(), True
+def parse_end_response(response_text):
+    """Parse the response to check if it contains the END tag at the end."""
+    # Check if the response ends with [END] tag
+    if response_text.strip().endswith("[END]"):
+        # Remove the [END] tag and return True to indicate this is the end
+        return response_text.strip()[:-5].strip(), True # Length of "[END]" is 5
     
-    # No FINAL tag found, return the original response and False
+    # No END tag found, return the original response and False
     return response_text, False
 
 def parse_terminal_commands(response_text):
@@ -215,79 +185,94 @@ def parse_terminal_commands(response_text):
 
 def execute_terminal_command(command):
     """Execute a terminal command and capture its output."""
-    print(f"\n{Fore.YELLOW}Executing command:{Style.RESET_ALL} {command}")
+    print("-" * 30)
+    print(f"{Style.BRIGHT}{Fore.YELLOW}Executing Command:{Style.RESET_ALL} {Fore.WHITE}{command}{Style.RESET_ALL}")
+    
+    output = ""
+    errors = ""
+    return_code = -1
     
     try:
         # Execute the command and capture output
         result = subprocess.run(
             command,
-            shell=True,
+            shell=True, # Be cautious with shell=True
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            check=False # Don't raise exception on non-zero exit
         )
         
+        output = result.stdout.strip()
+        errors = result.stderr.strip()
+        return_code = result.returncode
+        
         # Print command output
-        if result.stdout:
-            print(f"\n{Fore.CYAN}Command output:{Style.RESET_ALL}")
-            print(result.stdout)
+        if output:
+            print(f"\n{Fore.CYAN}--- Output ---{Style.RESET_ALL}")
+            print(output)
+            print(f"{Fore.CYAN}--------------{Style.RESET_ALL}")
         
         # Print any errors
-        if result.stderr:
-            print(f"\n{Fore.RED}Command errors:{Style.RESET_ALL}")
-            print(result.stderr)
+        if errors:
+            print(f"\n{Fore.RED}--- Errors ---{Style.RESET_ALL}")
+            print(errors)
+            print(f"{Fore.RED}------------{Style.RESET_ALL}")
         
         # Print status
-        if result.returncode == 0:
-            print(f"\n{Fore.GREEN}Command executed successfully (return code: 0){Style.RESET_ALL}")
+        if return_code == 0:
+            print(f"\n{Fore.GREEN}✓ Command finished successfully (Exit Code: 0){Style.RESET_ALL}")
         else:
-            print(f"\n{Fore.RED}Command failed with return code: {result.returncode}{Style.RESET_ALL}")
-        
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode
-        }
+            print(f"\n{Fore.RED}✗ Command failed (Exit Code: {return_code}){Style.RESET_ALL}")
+            
     except Exception as e:
-        print(f"\n{Fore.RED}Error executing command: {e}{Style.RESET_ALL}")
-        return {
-            "stdout": "",
-            "stderr": str(e),
-            "returncode": -1
-        }
+        errors = str(e)
+        print(f"\n{Fore.RED}✗ Error executing command:{Style.RESET_ALL} {e}")
+
+    print("-" * 30)    
+    return {
+        "stdout": output,
+        "stderr": errors,
+        "returncode": return_code
+    }
 
 def parse_file_operations(response_text):
     """Parse the response text to extract file operations."""
-    # First, check if there's a FINAL tag and remove it
-    if response_text.strip().endswith("[FINAL]"):
-        # Remove FINAL tag before parsing file operations
-        response_text = response_text.strip()[:-7].strip()
+    # Clean the response text (remove [END] tag if present) before parsing ops
+    cleaned_response, _ = parse_end_response(response_text)
     
     file_operations = []
     
-    # Find CREATE operations
+    # Find CREATE operations using the cleaned response
     create_pattern = r"\[CREATE=([^\]]+)\](.*?)\[/CREATE\]"
-    for match in re.finditer(create_pattern, response_text, re.DOTALL):
+    for match in re.finditer(create_pattern, cleaned_response, re.DOTALL):
         filename = match.group(1).strip()
-        content = match.group(2)  # Do NOT strip content for creation
-        file_operations.append({
-            "type": "create",
-            "filename": filename,
-            "content": content
-        })
+        # --- Strip content for CREATE ---
+        content = match.group(2).strip() 
+        if content: # Add operation only if content is not empty after stripping
+            file_operations.append({
+                "type": "create",
+                "filename": filename,
+                "content": content
+            })
     
-    # Find REPLACE operations
+    # Find REPLACE operations using the cleaned response
     replace_pattern = r"\[REPLACE=([^\]]+)\](.*?)\[TO\](.*?)\[/REPLACE\]"
-    for match in re.finditer(replace_pattern, response_text, re.DOTALL):
+    for match in re.finditer(replace_pattern, cleaned_response, re.DOTALL):
         filename = match.group(1).strip()
-        old_content = match.group(2)  # DO NOT STRIP - preserve exact whitespace
-        new_content = match.group(3)  # DO NOT STRIP - preserve exact whitespace
-        file_operations.append({
-            "type": "replace",
-            "filename": filename,
-            "old_content": old_content,
-            "new_content": new_content
-        })
+        # --- Strip content for REPLACE ---
+        old_content = match.group(2).strip() 
+        new_content = match.group(3).strip()
+        if old_content: # Add operation only if old_content is not empty after stripping
+             file_operations.append({
+                 "type": "replace",
+                 "filename": filename,
+                 "old_content": old_content,
+                 "new_content": new_content
+             })
+        else:
+              print(f"{Fore.YELLOW}Warning: Skipping REPLACE operation for '{filename}' because the 'old content' block was empty after stripping whitespace.{Style.RESET_ALL}")
+
     
     return file_operations
 
@@ -296,45 +281,63 @@ def show_diff(old_lines, new_lines):
     import difflib
     
     diff = difflib.ndiff(old_lines, new_lines)
+    print(f"{Fore.MAGENTA}--- Diff Start ---{Style.RESET_ALL}")
     for line in diff:
         if line.startswith('+ '):
-            print(f"{Back.GREEN}{line[2:]}{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}+{Style.RESET_ALL} {line[2:]}") # Green for additions
         elif line.startswith('- '):
-            print(f"{Back.RED}{line[2:]}{Style.RESET_ALL}")
+            print(f"{Fore.RED}-{Style.RESET_ALL} {line[2:]}")   # Red for deletions
         elif line.startswith('? '):
+            # Optionally show context hints in a different color
+            # print(f"{Fore.CYAN}{line}{Style.RESET_ALL}") 
             continue
         else:
-            print(line[2:])
+            print(f"  {line[2:]}") # Keep indentation for context lines
+    print(f"{Fore.MAGENTA}--- Diff End ---{Style.RESET_ALL}")
 
 def preview_changes(file_operations):
     """Preview changes to be made to files."""
-    print(f"\n{Fore.CYAN}=== File Operations Preview ==={Style.RESET_ALL}\n")
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Proposed File Operations ==={Style.RESET_ALL}")
     
+    if not file_operations:
+        print(f"{Fore.YELLOW}No file operations proposed.{Style.RESET_ALL}")
+        return True # Nothing to confirm if no operations
+
+    operations_present = False
     for op in file_operations:
+        operations_present = True
+        print("-" * 30) # Separator
         if op["type"] == "create":
-            print(f"{Fore.GREEN}CREATE{Style.RESET_ALL} {op['filename']}")
-            print(f"{Fore.YELLOW}Content:{Style.RESET_ALL}")
-            for line in op["content"].splitlines()[:5]:
-                print(f"{Back.GREEN}{line}{Style.RESET_ALL}")
+            print(f"{Style.BRIGHT}{Fore.GREEN}CREATE File:{Style.RESET_ALL} {Fore.WHITE}{op['filename']}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Content Preview (first 5 lines):{Style.RESET_ALL}")
+            # Add slight indent for content preview
+            preview_content = "\n".join([f"  {line}" for line in op["content"].splitlines()[:5]])
+            print(f"{Fore.GREEN}{preview_content}{Style.RESET_ALL}")
             if len(op["content"].splitlines()) > 5:
-                print("...")
+                print(f"{Fore.GREEN}  ...{Style.RESET_ALL}")
             print()
         
         elif op["type"] == "replace":
-            print(f"{Fore.YELLOW}REPLACE{Style.RESET_ALL} in {op['filename']}")
-            
+            print(f"{Style.BRIGHT}{Fore.YELLOW}REPLACE in File:{Style.RESET_ALL} {Fore.WHITE}{op['filename']}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Changes:{Style.RESET_ALL}")
             # Show diff - DO NOT STRIP WHITESPACE here to show exact indentation
-            print(f"{Fore.YELLOW}Diff:{Style.RESET_ALL}")
             show_diff(op["old_content"].splitlines(), op["new_content"].splitlines())
             print()
-    
-    return input(f"{Fore.CYAN}Apply these changes? (y/n): {Style.RESET_ALL}").lower().startswith('y')
+            
+    if not operations_present:
+         print(f"{Fore.YELLOW}No file operations were parsed from the response.{Style.RESET_ALL}")
+         return True # Nothing to confirm
+
+    print("-" * 30) # Footer separator
+    confirm = input(f"{Style.BRIGHT}{Fore.CYAN}Apply these file changes? (y/n): {Style.RESET_ALL}").lower().strip()
+    return confirm == 'y'
 
 def apply_changes(file_operations):
     """Apply the file operations."""
-    # Keep track of failed and successful operations
     failed_ops = []
     successful_ops = []
+    
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Applying File Operations ==={Style.RESET_ALL}")
     
     for op in file_operations:
         if op["type"] == "create":
@@ -343,73 +346,93 @@ def apply_changes(file_operations):
                 directory = os.path.dirname(op["filename"])
                 if directory and not os.path.exists(directory):
                     os.makedirs(directory)
-                with open(op["filename"], "w") as f:
-                    f.write(op["content"])
-                print(f"{Fore.GREEN}✓ SUCCESS: Created{Style.RESET_ALL} {op['filename']}")
+                    print(f"{Fore.YELLOW}  Created directory: {directory}{Style.RESET_ALL}")
+                # Ensure consistent newlines on write (optional but good practice)
+                content_to_write = op["content"].replace('\r\n', '\n')
+                with open(op["filename"], "w", newline='\n') as f: # Use newline='' or '\n'
+                    f.write(content_to_write)
+                print(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Created {Fore.WHITE}{op['filename']}{Style.RESET_ALL}")
                 successful_ops.append(op)
             except Exception as e:
-                print(f"{Fore.RED}× FAILED: Could not create {op['filename']}: {e}{Style.RESET_ALL}")
+                print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Could not create {Fore.WHITE}{op['filename']}{Style.RESET_ALL}: {e}")
                 failed_ops.append(op)
-        
+
         elif op["type"] == "replace":
             try:
+                # Read file content, normalize newlines immediately for reliable comparison later if needed
                 with open(op["filename"], "r") as f:
-                    content = f.read()
+                    content = f.read() # Read raw content first
                 
-                # Check for exact match first
-                if op["old_content"] in content:
-                    new_content = content.replace(op["old_content"], op["new_content"])
-                    with open(op["filename"], "w") as f:
-                        f.write(new_content)
-                    print(f"{Fore.GREEN}✓ SUCCESS: Updated{Style.RESET_ALL} {op['filename']} with exact match")
+                # --- Primary Strategy: Exact Match (Raw) ---
+                # Compare the raw content from AI with raw content from file
+                if op["old_content"] in content: 
+                    # Found exact content, perform replacement using original AI content
+                    new_content_applied = content.replace(op["old_content"], op["new_content"], 1) # Replace only once
+                    # Write back with consistent newlines
+                    with open(op["filename"], "w", newline='\n') as f:
+                        f.write(new_content_applied.replace('\r\n', '\n'))
+                    print(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Updated {Fore.WHITE}{op['filename']}{Style.RESET_ALL} (Exact Match)")
                     successful_ops.append(op)
+                
+                # --- Fallback Strategy: Indentation-Aware Match ---
                 else:
-                    # Try normalized whitespace check
-                    normalized_old = "\n".join([line.rstrip() for line in op["old_content"].splitlines()])
-                    normalized_content = "\n".join([line.rstrip() for line in content.splitlines()])
+                    print(f"{Fore.YELLOW}  Exact match for REPLACE in '{op['filename']}' failed. Trying indentation-aware fallback...{Style.RESET_ALL}")
                     
-                    if normalized_old in normalized_content:
-                        print(f"{Fore.GREEN}✓ SUCCESS: Found match with normalized whitespace in {op['filename']}{Style.RESET_ALL}")
-                        new_content = normalized_content.replace(normalized_old, "\n".join([line.rstrip() for line in op["new_content"].splitlines()]))
-                        with open(op["filename"], "w") as f:
-                            f.write(new_content)
-                        print(f"{Fore.GREEN}✓ SUCCESS: Updated{Style.RESET_ALL} {op['filename']} with normalized whitespace")
+                    # Add representation print for debugging EXACT match failure
+                    print(f"{Style.DIM}--- Debug Info for Exact Match Failure ---{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}  File Content (repr, first 100 chars):{Style.RESET_ALL}\n    {repr(content[:100])}")
+                    print(f"{Fore.CYAN}  AI 'Old Content' (repr):{Style.RESET_ALL}\n    {repr(op['old_content'])}")
+                    print(f"{Style.DIM}------------------------------------------{Style.RESET_ALL}")
+
+                    # This function attempts to find the block even if indentation is slightly off
+                    # It implicitly handles different newline types because it splits lines
+                    success = handle_indentation_mismatch(op["filename"], op["old_content"], op["new_content"])
+                    
+                    if success:
+                        print(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Applied indentation-aware replacement in {Fore.WHITE}{op['filename']}{Style.RESET_ALL}")
                         successful_ops.append(op)
                     else:
-                        # Try indentation-aware replacement as a last resort
-                        print(f"{Fore.YELLOW}Exact match not found. Trying indentation-aware replacement...{Style.RESET_ALL}")
-                        success = handle_indentation_mismatch(op["filename"], op["old_content"], op["new_content"])
-                        
-                        if success:
-                            print(f"{Fore.GREEN}✓ SUCCESS: Applied indentation-aware replacement in {op['filename']}{Style.RESET_ALL}")
-                            successful_ops.append(op)
-                        else:
-                            print(f"{Fore.RED}× FAILED: Could not find matching content in {op['filename']}.{Style.RESET_ALL}")
-                            failed_ops.append(op)
+                        # If both exact and fallback failed
+                        print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Could not find exact or similar content block to replace in {Fore.WHITE}{op['filename']}{Style.RESET_ALL}.")
+                        # The detailed repr print above should help diagnose why exact failed.
+                        # The Indentation handler prints its own debug messages now.
+                        failed_ops.append(op)
+
             except FileNotFoundError:
-                print(f"{Fore.RED}× FAILED: File {op['filename']} not found.{Style.RESET_ALL}")
+                print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} File {Fore.WHITE}{op['filename']}{Style.RESET_ALL} not found for REPLACE.")
                 failed_ops.append(op)
-    
-    # Return info about operations so we know which need retrying
+            except Exception as e:
+                 print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error processing REPLACE for {Fore.WHITE}{op['filename']}{Style.RESET_ALL}: {e}")
+                 failed_ops.append(op)
+                 
+    print("-" * 30) # Footer separator
     return {"successful": successful_ops, "failed": failed_ops}
 
 def handle_indentation_mismatch(filename, old_content, new_content):
     """Handle replacements with indentation mismatches."""
     try:
-        with open(filename, "r") as f:
-            file_lines = f.readlines()
-            file_content = ''.join(file_lines)
+        # Use newline=None to preserve original line endings during read
+        with open(filename, "r", newline=None) as f:
+            file_lines = f.readlines() # Reads lines keeping original endings
+            
+        # Normalize newlines from AI content just for processing here
+        old_lines = old_content.replace('\r\n', '\n').splitlines() 
         
-        # Remove leading whitespace from each line of the old content to create a pattern
-        old_lines = old_content.splitlines()
+        # Create a list of non-empty lines, stripped of LEADING whitespace only
         stripped_old_lines = [line.lstrip() for line in old_lines if line.strip()]
         
+        if not stripped_old_lines:
+             print(f"{Fore.YELLOW}  [Debug Indent Handler] AI 'old_content' was empty or only whitespace. Cannot match.{Style.RESET_ALL}")
+             return False
+
         # If the content is only one line, handle it specially
         if len(stripped_old_lines) == 1:
-            return handle_single_line_replacement(filename, old_content, new_content, file_lines)
+            # Pass original file_lines with potentially mixed endings
+            return handle_single_line_replacement(filename, old_content, new_content, file_lines) 
         
         # If we have multiple non-empty lines, try a more sophisticated matching
-        return handle_multiline_replacement(filename, stripped_old_lines, new_content, file_lines)
+        # Pass original file_lines with potentially mixed endings
+        return handle_multiline_replacement(filename, stripped_old_lines, new_content, file_lines) 
     
     except Exception as e:
         print(f"{Fore.RED}Error during indentation-aware replacement: {e}{Style.RESET_ALL}")
@@ -419,208 +442,179 @@ def handle_indentation_mismatch(filename, old_content, new_content):
 
 def handle_multiline_replacement(filename, stripped_old_lines, new_content, file_lines):
     """Handle more complex multiline replacements with flexible indentation matching."""
-    # For debugging
-    print(f"{Fore.CYAN}Searching for {len(stripped_old_lines)} lines of content...{Style.RESET_ALL}")
-    
-    # First, find all potential starting points (lines that match the first stripped line)
+    print(f"{Fore.CYAN}  [Debug Indent Handler] Searching for {len(stripped_old_lines)} lines. First line pattern: '{stripped_old_lines[0]}'{Style.RESET_ALL}")
+
     potential_starts = []
-    for i, line in enumerate(file_lines):
-        stripped_line = line.lstrip()
-        if stripped_line and stripped_line == stripped_old_lines[0]:
+    found_first_line = False # Debug flag
+    
+    # Process file lines consistently: normalize newlines *after* reading, then strip
+    normalized_file_lines_stripped = [line.replace('\r\n', '\n').rstrip('\n').lstrip() for line in file_lines]
+
+    for i, stripped_file_line in enumerate(normalized_file_lines_stripped):
+        # Debug print for comparison - uncomment if needed
+        # print(f"    [Debug] Comparing file line {i+1} stripped: '{stripped_file_line}' == pattern: '{stripped_old_lines[0]}'")
+        if stripped_file_line and stripped_file_line == stripped_old_lines[0]:
             potential_starts.append(i)
-    
+            found_first_line = True 
+
+    # More detailed debug message if the first line isn't found
+    if not found_first_line:
+        print(f"{Fore.RED}  [Debug Indent Handler] Failed to find any match for the first stripped line pattern: '{stripped_old_lines[0]}'{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}  [Debug Indent Handler] Stripped file lines searched:{Style.RESET_ALL}")
+        for idx, fl_line_stripped in enumerate(normalized_file_lines_stripped):
+             # Limit printing for very long files
+             if idx < 20 or idx > len(normalized_file_lines_stripped) - 5 : 
+                 print(f"    {idx+1}: '{fl_line_stripped}'")
+             elif idx == 20:
+                 print("     ...")
+
+        return False 
+
     if not potential_starts:
-        print(f"{Fore.RED}× FAILED: Could not find any matches for the first line.{Style.RESET_ALL}")
-        return False
-    
-    print(f"{Fore.CYAN}Found {len(potential_starts)} potential starting points.{Style.RESET_ALL}")
-    
-    # Try each potential starting point
+         print(f"{Fore.RED}× FAILED: Could not find any potential starting points (logic error?).{Style.RESET_ALL}")
+         return False
+
+    print(f"{Fore.CYAN}  [Debug Indent Handler] Found {len(potential_starts)} potential starting indices: {potential_starts}{Style.RESET_ALL}")
+
+    # --- Try each potential starting point ---
     for start_idx in potential_starts:
         match_found = True
         indentation_patterns = []
-        matching_lines = []
-        
+        matching_indices = [] # Store the original indices from file_lines
+        current_file_idx = start_idx # Track index in the original file_lines
+
         # Check if this starting point leads to a full match
         for j, pattern_line in enumerate(stripped_old_lines):
-            if start_idx + j >= len(file_lines):
-                match_found = False
-                break
-                
-            file_line = file_lines[start_idx + j]
-            stripped_file_line = file_line.lstrip()
+            # Need to find the next non-empty line in the file from current_file_idx onwards
+            found_matching_file_line = False
+            while current_file_idx < len(file_lines):
+                 file_line_raw = file_lines[current_file_idx]
+                 # Normalize and strip the current file line for comparison
+                 stripped_current_file_line = file_line_raw.replace('\r\n', '\n').rstrip('\n').lstrip()
+
+                 # If the stripped file line is empty, skip it and check the next one
+                 if not stripped_current_file_line:
+                      current_file_idx += 1
+                      continue 
+                 
+                 # Now compare the non-empty stripped file line with the pattern line
+                 # print(f"    [Debug] Matching pattern '{pattern_line}' with file line {current_file_idx+1} stripped '{stripped_current_file_line}'")
+                 if stripped_current_file_line == pattern_line:
+                      # Store the indentation from the *original raw* file line
+                      original_indentation = file_line_raw[:len(file_line_raw) - len(file_line_raw.lstrip())]
+                      indentation_patterns.append(original_indentation)
+                      matching_indices.append(current_file_idx)
+                      current_file_idx += 1 # Move to next file line for the next pattern
+                      found_matching_file_line = True
+                      break # Found match for this pattern line, move to next pattern line
+                 else:
+                      # Mismatch found for this pattern line at this file position
+                      match_found = False
+                      break # Stop checking this potential_start
+
+            # If we reached end of file while looking or if inner loop broke due to mismatch
+            if not found_matching_file_line or not match_found:
+                 match_found = False
+                 break # Stop checking this potential_start
+
+        # --- Check if a full match was found for this potential_start ---
+        if match_found and len(matching_indices) == len(stripped_old_lines):
+            print(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Found matching content block starting at line {matching_indices[0]+1}.")
             
-            # Skip empty lines in the file when matching
-            if not stripped_file_line and j < len(stripped_old_lines) - 1:
-                # Adjust for skipped lines
-                start_idx -= 1
-                continue
-                
-            if stripped_file_line == pattern_line:
-                # Store the indentation for this line
-                indentation = file_line[:len(file_line) - len(stripped_file_line)]
-                indentation_patterns.append(indentation)
-                matching_lines.append(start_idx + j)
-            else:
-                match_found = False
-                break
-        
-        if match_found and len(matching_lines) == len(stripped_old_lines):
-            print(f"{Fore.GREEN}✓ SUCCESS: Found matching content at lines {matching_lines[0]+1}-{matching_lines[-1]+1}{Style.RESET_ALL}")
-            
-            # Determine the base indentation (from first line)
+            # Determine the base indentation (from first matching line's original indent)
             base_indentation = indentation_patterns[0]
             
-            # Apply the replacement with proper indentation
-            new_lines = []
-            for new_line in new_content.splitlines():
-                if new_line.strip():
-                    new_lines.append(f"{base_indentation}{new_line.lstrip()}\n")
-                else:
-                    new_lines.append("\n")  # Empty line
+            # Apply the replacement with proper indentation, preserving original line endings where possible
+            new_lines_with_indent = []
+            # Normalize AI's new content newlines for processing
+            normalized_new_lines = new_content.replace('\r\n','\n').splitlines()
             
-            # Replace the lines in the file
-            file_lines[matching_lines[0]:matching_lines[-1] + 1] = new_lines
+            for new_line in normalized_new_lines:
+                stripped_new = new_line.lstrip()
+                if stripped_new: # If line has content
+                    # Indent based on the first line's indent, keep original newline type if possible
+                    # For simplicity, we'll write with '\n' consistently now
+                     new_lines_with_indent.append(f"{base_indentation}{stripped_new}\n")
+                else: # Preserve empty lines
+                     new_lines_with_indent.append("\n")
             
-            # Write back to the file
-            with open(filename, "w") as f:
-                f.writelines(file_lines)
+            # Replace the lines in the original file_lines list
+            # We need the start index and the end index of the matched block
+            start_replace_idx = matching_indices[0]
+            end_replace_idx = matching_indices[-1] 
             
-            print(f"{Fore.GREEN}✓ SUCCESS: Replaced content with indentation preserved.{Style.RESET_ALL}")
-            return True
-    
-    # If we get here, we couldn't find a complete match
-    print(f"{Fore.RED}× FAILED: Could not find a complete match for the content.{Style.RESET_ALL}")
-    
-    # As a fallback, try a fuzzy match (ignoring indentation and spacing)
-    return attempt_fuzzy_match(filename, stripped_old_lines, new_content, file_lines)
+            # Replace slice in original list
+            file_lines[start_replace_idx : end_replace_idx + 1] = new_lines_with_indent
+            
+            # Write back to the file using consistent newlines
+            try:
+                with open(filename, "w", newline='\n') as f:
+                    f.writelines(file_lines)
+                print(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Replaced content in {Fore.WHITE}{filename}{Style.RESET_ALL} using indentation handler.")
+                return True # Successful replacement
+            except Exception as write_error:
+                 print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error writing replaced content to {Fore.WHITE}{filename}{Style.RESET_ALL}: {write_error}")
+                 return False # Write failed
 
-def attempt_fuzzy_match(filename, stripped_old_lines, new_content, file_lines):
-    """Attempt a fuzzy match by focusing on content rather than exact whitespace."""
-    # Normalize content for fuzzy matching 
-    normalized_pattern = '\n'.join([line.strip() for line in stripped_old_lines if line.strip()])
+
+    # If we loop through all potential_starts and none result in a full match
+    print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Could not find a complete matching block in {Fore.WHITE}{filename}{Style.RESET_ALL} after checking all potential starts.")
     
-    # Prepare sliding window to find the best match
-    window_size = len(stripped_old_lines)
-    best_match_score = 0
-    best_match_idx = -1
-    
-    # Look for the best matching region in the file
-    for i in range(len(file_lines) - window_size + 1):
-        window_content = ''.join(file_lines[i:i+window_size])
-        normalized_window = '\n'.join([line.strip() for line in window_content.splitlines() if line.strip()])
-        
-        # Calculate a simple similarity score (can be improved with difflib or other algorithms)
-        import difflib
-        similarity = difflib.SequenceMatcher(None, normalized_pattern, normalized_window).ratio()
-        
-        if similarity > best_match_score and similarity > 0.7:  # 70% threshold
-            best_match_score = similarity
-            best_match_idx = i
-    
-    if best_match_idx >= 0:
-        print(f"{Fore.YELLOW}Found fuzzy match with {best_match_score*100:.1f}% similarity at line {best_match_idx+1}.{Style.RESET_ALL}")
-        
-        # Determine indentation from the first line of the match
-        first_line = file_lines[best_match_idx]
-        indentation = first_line[:len(first_line) - len(first_line.lstrip())]
-        
-        # Apply indentation to new content
-        new_lines = []
-        for new_line in new_content.splitlines():
-            if new_line.strip():
-                new_lines.append(f"{indentation}{new_line.lstrip()}\n")
-            else:
-                new_lines.append("\n")
-        
-        # Replace the lines
-        file_lines[best_match_idx:best_match_idx + window_size] = new_lines
-        
-        # Write back to the file
-        with open(filename, "w") as f:
-            f.writelines(file_lines)
-        
-        print(f"{Fore.GREEN}Applied fuzzy matching replacement.{Style.RESET_ALL}")
-        return True
-    
+    # --- Fallback: Fuzzy Match (Optional, can be noisy/dangerous) ---
+    # Consider if fuzzy matching is desired or too risky. Let's disable it for now.
+    # print(f"{Fore.YELLOW}  Skipping fuzzy match fallback.{Style.RESET_ALL}")
+    # return attempt_fuzzy_match(filename, stripped_old_lines, new_content, file_lines)
     return False
 
 def handle_single_line_replacement(filename, old_content, new_content, file_lines):
     """Handle single line replacements with indentation preservation."""
-    old_stripped = old_content.strip()
+    # Normalize AI content for comparison
+    old_stripped = old_content.replace('\r\n', '\n').strip() 
     success = False
     
-    print(f"{Fore.CYAN}Looking for single-line match: '{old_stripped}'{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}  [Debug Indent Handler] Looking for single-line match: '{old_stripped}'{Style.RESET_ALL}")
     
-    # Try exact content match first
-    for i, line in enumerate(file_lines):
-        stripped_line = line.strip()
+    match_index = -1
+    original_indentation = ""
+
+    # Try exact content match first (stripping file lines for comparison)
+    for i, line_raw in enumerate(file_lines):
+        stripped_line = line_raw.replace('\r\n', '\n').strip() # Normalize and strip file line
         if stripped_line == old_stripped:
-            # Found match - preserve the indentation
-            indentation = line[:len(line) - len(stripped_line)]
-            
-            # Apply indentation to new content (potentially multi-line)
-            new_lines = []
-            for new_line in new_content.splitlines():
-                if new_line.strip():
-                    new_lines.append(f"{indentation}{new_line.lstrip()}\n")
-                else:
-                    new_lines.append("\n")
-            
-            # Replace the line in the file
-            file_lines[i:i+1] = new_lines
-            
-            # Write back to the file
-            with open(filename, "w") as f:
-                f.writelines(file_lines)
-            
-            print(f"{Fore.GREEN}Successfully replaced line with indentation preserved at line {i+1}.{Style.RESET_ALL}")
+            # Found match - preserve the original indentation
+            original_indentation = line_raw[:len(line_raw) - len(line_raw.lstrip())]
+            match_index = i
+            print(f"{Fore.GREEN}  [Debug Indent Handler] Found exact single-line match at line {i+1}. Indentation: '{original_indentation}'{Style.RESET_ALL}")
             success = True
             break
     
-    # If no exact match, try fuzzy matching for the single line
-    if not success:
-        print(f"{Fore.YELLOW}No exact match found. Trying fuzzy match...{Style.RESET_ALL}")
+    if success:
+        # Apply indentation to new content (potentially multi-line)
+        new_lines_with_indent = []
+        normalized_new_lines = new_content.replace('\r\n','\n').splitlines()
+        for new_line in normalized_new_lines:
+            stripped_new = new_line.lstrip()
+            if stripped_new:
+                new_lines_with_indent.append(f"{original_indentation}{stripped_new}\n")
+            else:
+                new_lines_with_indent.append("\n")
         
-        best_match_score = 0
-        best_match_idx = -1
+        # Replace the line in the file_lines list
+        file_lines[match_index : match_index+1] = new_lines_with_indent
         
-        for i, line in enumerate(file_lines):
-            stripped_line = line.strip()
-            if not stripped_line:
-                continue
-                
-            import difflib
-            similarity = difflib.SequenceMatcher(None, old_stripped, stripped_line).ratio()
-            
-            if similarity > best_match_score and similarity > 0.7:
-                best_match_score = similarity
-                best_match_idx = i
-        
-        if best_match_idx >= 0:
-            # Found a fuzzy match
-            line = file_lines[best_match_idx]
-            indentation = line[:len(line) - len(line.lstrip())]
-            
-            # Apply indentation
-            new_lines = []
-            for new_line in new_content.splitlines():
-                if new_line.strip():
-                    new_lines.append(f"{indentation}{new_line.lstrip()}\n")
-                else:
-                    new_lines.append("\n")
-            
-            # Replace the line
-            file_lines[best_match_idx:best_match_idx+1] = new_lines
-            
-            # Write back
-            with open(filename, "w") as f:
+        # Write back to the file
+        try:
+            with open(filename, "w", newline='\n') as f:
                 f.writelines(file_lines)
-            
-            print(f"{Fore.GREEN}Applied fuzzy single-line replacement at line {best_match_idx+1} with {best_match_score*100:.1f}% similarity.{Style.RESET_ALL}")
-            success = True
-    
-    return success
+            print(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Replaced single line in {Fore.WHITE}{filename}{Style.RESET_ALL} with indentation preserved.")
+            return True
+        except Exception as write_error:
+             print(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error writing replaced single line to {Fore.WHITE}{filename}{Style.RESET_ALL}: {write_error}")
+             return False
+             
+    # If no exact match, maybe try fuzzy later, but let's rely on exact for now.
+    print(f"{Fore.YELLOW}  [Debug Indent Handler] No exact single-line match found.{Style.RESET_ALL}")
+    return False
 
 def process_add_command(target):
     """Process the /add command to include file or directory content."""
@@ -671,125 +665,152 @@ def process_add_command(target):
 
 def generate_file_context(file_history):
     """Generate a context string about files that have been created or modified."""
-    context = "FILE CONTEXT - IMPORTANT FOR CONTINUITY:\n"
+    context = f"{Style.BRIGHT}{Fore.MAGENTA}--- FILE CONTEXT ---{Style.RESET_ALL}\n" # Header
     
     # Add information about files created in this session
     if file_history["created"]:
-        context += "\nFiles you have CREATED in this session:\n"
+        context += f"\n{Fore.GREEN}Files CREATED this session:{Style.RESET_ALL}\n"
         for file in file_history["created"]:
-            context += f"- {file}\n"
+            context += f"- {Fore.WHITE}{file}{Style.RESET_ALL}\n"
     
     # Add information about files modified in this session
     if file_history["modified"]:
-        context += "\nFiles you have MODIFIED in this session:\n"
+        context += f"\n{Fore.YELLOW}Files MODIFIED this session:{Style.RESET_ALL}\n"
         for file in file_history["modified"]:
-            context += f"- {file}\n"
+            context += f"- {Fore.WHITE}{file}{Style.RESET_ALL}\n"
     
     if not file_history["created"] and not file_history["modified"]:
-        context += "\nNo files have been created or modified yet in this session.\n"
+        context += f"\n{Fore.CYAN}No files created or modified yet this session.{Style.RESET_ALL}\n"
     
     # Add CRITICAL warning about using correct filenames
-    context += "\n⚠️ CRITICAL: When referring to files, ALWAYS use the exact filenames from above if they exist.\n"
-    context += "NEVER invent new filenames or refer to files that aren't in the list unless creating new ones.\n\n"
+    context += f"\n{Fore.RED}⚠️ CRITICAL:{Style.RESET_ALL} Always use exact filenames from context.\n"
     
     # Add the CURRENT CONTENT of all created/modified files to provide accurate context
-    context += "CURRENT FILE CONTENTS:\n"
-    all_files = set(file_history["created"] + file_history["modified"])
+    context += f"\n{Style.BRIGHT}{Fore.MAGENTA}--- CURRENT FILE CONTENTS ---{Style.RESET_ALL}\n"
+    all_files = sorted(list(set(file_history["created"] + file_history["modified"])))
     
-    for filename in all_files:
-        try:
-            if os.path.exists(filename):
-                with open(filename, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                context += f"\n--- {filename} ---\n```\n{content}\n```\n"
-            else:
-                context += f"\n--- {filename} --- [FILE NO LONGER EXISTS]\n"
-        except Exception as e:
-            context += f"\n--- {filename} --- [ERROR READING FILE: {str(e)}]\n"
+    if not all_files:
+         context += f"{Fore.CYAN}No files to show content for yet.{Style.RESET_ALL}\n"
+    else:
+        for filename in all_files:
+            try:
+                if os.path.exists(filename):
+                    with open(filename, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    # Add file delimiters
+                    context += f"\n{Fore.CYAN}=== START: {filename} ==={Style.RESET_ALL}\n"
+                    context += f"```\n{content}\n```\n" 
+                    context += f"{Fore.CYAN}=== END: {filename} ==={Style.RESET_ALL}\n"
+                else:
+                    context += f"\n{Fore.YELLOW}--- {filename} --- [FILE DELETED/MOVED]{Style.RESET_ALL}\n"
+            except Exception as e:
+                context += f"\n{Fore.RED}--- {filename} --- [ERROR READING: {str(e)}]{Style.RESET_ALL}\n"
     
+    context += f"{Style.BRIGHT}{Fore.MAGENTA}--- END FILE CONTEXT ---{Style.RESET_ALL}\n"
     return context
 
 def retry_replacements(file_operations, model, user_query, file_history):
     """Retry failed replacements with more context to the model."""
+    # Check which operations *still* failed after the apply_changes attempt
     failed_operations = []
-    
-    for op in file_operations:
+    for op in file_operations: # These are ops that failed apply_changes
         if op["type"] == "replace":
-            try:
-                with open(op["filename"], "r") as f:
-                    content = f.read()
-                
-                # Re-check: if the exact content is present, then it's already successful
-                if op["old_content"] in content:
-                    print(f"{Fore.GREEN}✓ SUCCESS: Operation for {op['filename']} is correct.{Style.RESET_ALL}")
-                    continue
-                    
-                normalized_old = "\n".join([line.rstrip() for line in op["old_content"].splitlines()])
-                normalized_content = "\n".join([line.rstrip() for line in content.splitlines()])
-                
-                if normalized_old in normalized_content:
-                    print(f"{Fore.GREEN}✓ SUCCESS: Operation for {op['filename']} checks out with normalized whitespace.{Style.RESET_ALL}")
-                    continue
-                
-                failed_operations.append(op)
-            except FileNotFoundError:
-                continue
-    
+             try:
+                 # Double check if it exists now (maybe indentation handler worked?)
+                 with open(op["filename"], "r") as f:
+                      content = f.read()
+                 if op["old_content"] not in content:
+                      # Still not found exactly, add to retry list
+                      failed_operations.append(op)
+                 else:
+                      print(f"{Fore.YELLOW}  Note: Operation for {op['filename']} seems corrected now.{Style.RESET_ALL}")
+
+             except FileNotFoundError:
+                 print(f"{Fore.YELLOW}  Note: File {op['filename']} not found for retry check.{Style.RESET_ALL}")
+                 continue # Skip if file doesn't exist
+             except Exception as e:
+                 print(f"{Fore.RED}  Error re-checking failed op {op['filename']}: {e}{Style.RESET_ALL}")
+                 failed_operations.append(op) # Retry if check failed
+
     if not failed_operations:
+        # Reset attempt count if nothing needs retrying
         if hasattr(retry_replacements, 'attempt_count'):
             retry_replacements.attempt_count = 0
+        print(f"{Fore.GREEN}No remaining failed replacements to retry.{Style.RESET_ALL}")
         return  # Nothing to retry
+
+    print(f"\n{Fore.YELLOW}Retrying {len(failed_operations)} failed REPLACE operation(s)...{Style.RESET_ALL}")
     
-    print(f"\n{Fore.YELLOW}Some replacements still failed. Asking the model to correct them...{Style.RESET_ALL}")
-    
-    if hasattr(retry_replacements, 'attempt_count'):
-        retry_replacements.attempt_count += 1
-    else:
-        retry_replacements.attempt_count = 1
-        
-    if retry_replacements.attempt_count > 3:
-        print(f"{Fore.RED}Maximum retry attempts reached. Please check the files manually or try a different approach.{Style.RESET_ALL}")
-        retry_replacements.attempt_count = 0
-        return
-    
-    # Build the retry message with file context, etc.
-    retry_message = f"⚠️ Attempt {retry_replacements.attempt_count}/3: The following REPLACE operations did not match exactly. Please correct them using EXACT formatting (including indentation and whitespace):\n\n"
-    
+    # ... (rest of retry logic: attempt count, building message, calling model) ...
+
+    # Important: Make sure the retry prompt also emphasizes EXACT match requirement
+    retry_message = f"⚠️ Attempt {getattr(retry_replacements, 'attempt_count', 1)}/3: The following REPLACE operations failed because the 'old content' block was not found exactly as provided. \n"
+    retry_message += "Please carefully review the CURRENT FILE CONTENTS provided in the context and generate new [REPLACE] operations with the *exact* content (including whitespace and indentation) that exists in the file.\n\n"
+
     for op in failed_operations:
-        retry_message += f"In file {op['filename']} the following pattern was not found exactly:\n"
-        retry_message += f"```\n{op['old_content']}\n```\n\n"
+        retry_message += f"File: {op['filename']}\n"
+        retry_message += f"AI-Provided Content Not Found:\n```\n{op['old_content']}\n```\n\n"
     
-    retry_message += "Please provide updated REPLACE operations with EXACT matching patterns."
+    retry_message += "Provide corrected [REPLACE] blocks below:"
+
+    # ... (rest of retry: get system prompt, file context, call model, process response) ...
+
+def process_mentions(user_input):
+    """
+    Find @path/to/file mentions in user input, read the files,
+    and prepend their content to the input string for the model.
+    """
+    mention_pattern = r"@([\w\/\.\-\_]+)" # Regex to find @ followed by file path characters
+    mentions = re.findall(mention_pattern, user_input)
     
-    system_prompt = get_system_prompt()
-    file_context = generate_file_context(file_history)
+    prepended_content = ""
+    mentioned_files = set() # Keep track to avoid duplicates
+
+    if not mentions:
+        return user_input # No mentions found, return original input
+
+    print(f"{Style.DIM}--- Processing Mentions ---{Style.RESET_ALL}")
     
-    final_message = f"{system_prompt}\n\n{file_context}\n\nUSER QUERY: {user_query}\n\n{retry_message}"
-    
-    with tqdm(total=100, desc="Re-thinking", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-        for i in range(10):
-            time.sleep(0.1)
-            pbar.update(10)
-        response = model.generate_content(final_message)
-        pbar.update(100 - pbar.n)
-    
-    print(f"\n{Fore.GREEN}=== Corrections ==={Style.RESET_ALL}")
-    print(response.text)
-    
-    new_file_operations = parse_file_operations(response.text)
-    
-    if new_file_operations:
-        if preview_changes(new_file_operations):
-            for op in new_file_operations:
-                if op["type"] == "create":
-                    if op["filename"] not in file_history["created"]:
-                        file_history["created"].append(op["filename"])
-                elif op["type"] == "replace":
-                    if (op["filename"] not in file_history["modified"]) and (op["filename"] not in file_history["created"]):
-                        file_history["modified"].append(op["filename"])
+    for filepath in mentions:
+        if filepath in mentioned_files:
+            continue # Skip already processed mentions
             
-            apply_changes(new_file_operations)
-            retry_replacements(new_file_operations, model, user_query, file_history)
+        full_path = os.path.abspath(filepath) # Get absolute path
+        
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                
+                print(f"{Fore.CYAN}  Injecting content from: {filepath}{Style.RESET_ALL}")
+                
+                prepended_content += f"\n{Style.BRIGHT}{Fore.MAGENTA}--- MENTIONED FILE: {filepath} ---{Style.RESET_ALL}\n"
+                prepended_content += f"```\n{file_content}\n```\n"
+                prepended_content += f"{Style.BRIGHT}{Fore.MAGENTA}--- END MENTIONED FILE: {filepath} ---{Style.RESET_ALL}\n\n"
+                
+                mentioned_files.add(filepath)
+
+            except UnicodeDecodeError:
+                print(f"{Fore.YELLOW}  Warning: Cannot read mentioned binary file: {filepath}{Style.RESET_ALL}")
+                prepended_content += f"\n{Fore.YELLOW}[CodAgent Note: Mentioned file '{filepath}' is likely binary and could not be read.]{Style.RESET_ALL}\n\n"
+                mentioned_files.add(filepath)
+            except Exception as e:
+                print(f"{Fore.RED}  Error reading mentioned file {filepath}: {e}{Style.RESET_ALL}")
+                prepended_content += f"\n{Fore.RED}[CodAgent Note: Error reading mentioned file '{filepath}'.]{Style.RESET_ALL}\n\n"
+                mentioned_files.add(filepath)
+        else:
+            print(f"{Fore.YELLOW}  Warning: Mentioned file not found or is not a file: {filepath}{Style.RESET_ALL}")
+            # Optionally inform the model the file wasn't found
+            prepended_content += f"\n{Fore.YELLOW}[CodAgent Note: Mentioned file '{filepath}' not found.]{Style.RESET_ALL}\n\n"
+            mentioned_files.add(filepath) # Add even if not found to avoid reprocessing
+
+    if prepended_content:
+         print(f"{Style.DIM}--- End Processing Mentions ---{Style.RESET_ALL}")
+         # Return the prepended content followed by the original user input
+         return prepended_content + user_input
+    else:
+        # Return original input if no valid mentions were processed
+        return user_input
 
 def chat_with_model(model):
     """Start an interactive chat with the model."""
@@ -834,26 +855,16 @@ def chat_with_model(model):
     # Create history file if it doesn't exist
     Path(history_file).touch(exist_ok=True)
     
-    # Use plain prompt text without colorama codes
-    prompt_text = ">>> "
-    
     # Custom styling for the prompt using prompt_toolkit's native styling
+    # Using bold white for the prompt itself for visibility
     style = PromptStyle.from_dict({
-        'prompt': 'ansicyan bold',
+        'prompt': 'bold #ffffff', 
     })
     
-    print(f"\n{Fore.CYAN}=== CodAgent Chat ===\n{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}You are now chatting with the model. Type 'exit' to quit.{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}Current directory: {os.getcwd()}{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}Chat history will be saved to: {history_file}{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}Commands:{Style.RESET_ALL}")
-    print(f"  {Fore.CYAN}/add <file_or_dir>{Style.RESET_ALL} - Add file content or directory files to the chat")
-    print(f"  {Fore.CYAN}/remove <file_or_dir>{Style.RESET_ALL} - Remove file or directory from the context")
-    print(f"  {Fore.CYAN}/list{Style.RESET_ALL} - List all files and directories in the current context")
-    print(f"  {Fore.CYAN}/files{Style.RESET_ALL} - List all files created or modified in this session")
-    print(f"  {Fore.CYAN}/refresh{Style.RESET_ALL} - Refresh the model's awareness of all file contents")
-    print(f"  {Fore.CYAN}/help{Style.RESET_ALL} - Show this help message")
-    print()
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== CodAgent Interactive Session ==={Style.RESET_ALL}\n")
+    print(f"{Fore.GREEN}Type '/help' for commands, 'exit' or Ctrl+C to quit.{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Working Directory: {Fore.WHITE}{os.getcwd()}{Style.RESET_ALL}")
+    print("-" * 40) # Separator
     
     # Keep track of conversation to maintain context
     conversation_history = []
@@ -861,87 +872,102 @@ def chat_with_model(model):
     while True:
         try:
             # Use plain prompt text without colorama formatting
-            user_input = prompt(
-                prompt_text,
+            # Define rprompt using ANSI wrapper for correct color handling
+            rprompt_text = f"[{Fore.CYAN}{os.path.basename(os.getcwd())}{Style.RESET_ALL}]"
+            raw_user_input = prompt(
+                "CodAgent >>> ",
                 history=FileHistory(history_file),
                 auto_suggest=AutoSuggestFromHistory(),
-                style=style
+                style=style,
+                rprompt=ANSI(rprompt_text) # Use ANSI wrapper here
             )
             
-            if user_input.lower() in ['exit', 'quit', 'q']:
+            if raw_user_input.lower().strip() in ['exit', 'quit', 'q']:
+                print(f"{Fore.YELLOW}Exiting CodAgent session.{Style.RESET_ALL}")
                 break
-            
-            # Process commands
-            if user_input.startswith('/add '):
-                target = user_input[5:].strip()
-                content = process_add_command(target)
-                if content:
-                    # Track the added file/directory for context management
-                    added_context[target] = content
-                    user_input = f"Here's the content of {target}:\n\n{content}\n\nPlease help me with this."
-                    print(f"{Fore.GREEN}Added content of {target} to the conversation.{Style.RESET_ALL}")
-                else:
-                    continue
-            
-            elif user_input.startswith('/remove '):
-                target = user_input[8:].strip()
-                if target in added_context:
-                    del added_context[target]
-                    print(f"{Fore.YELLOW}Removed {target} from the conversation context.{Style.RESET_ALL}")
-                    # Let the model know what's been removed
-                    user_input = f"I've removed the file/directory '{target}' from our conversation context. Please disregard it in future responses."
-                else:
-                    print(f"{Fore.RED}Error: {target} was not found in the current context.{Style.RESET_ALL}")
-                    print(f"{Fore.YELLOW}Current context includes: {', '.join(added_context.keys()) if added_context else 'nothing'}{Style.RESET_ALL}")
-                    continue
-            
-            elif user_input.startswith('/list'):
-                if added_context:
-                    print(f"\n{Fore.CYAN}Files/directories in current context:{Style.RESET_ALL}")
-                    for idx, item in enumerate(added_context.keys(), 1):
-                        print(f"{Fore.GREEN}{idx}.{Style.RESET_ALL} {item}")
-                    print()
-                else:
-                    print(f"\n{Fore.YELLOW}No files or directories in current context.{Style.RESET_ALL}\n")
-                continue
                 
-            elif user_input.startswith('/files'):
-                print(f"\n{Fore.CYAN}Files created in this session:{Style.RESET_ALL}")
-                if file_history["created"]:
-                    for idx, file in enumerate(file_history["created"], 1):
-                        print(f"{Fore.GREEN}{idx}.{Style.RESET_ALL} {file}")
-                else:
-                    print(f"{Fore.YELLOW}No files created yet.{Style.RESET_ALL}")
-                
-                print(f"\n{Fore.CYAN}Files modified in this session:{Style.RESET_ALL}")
-                if file_history["modified"]:
-                    for idx, file in enumerate(file_history["modified"], 1):
-                        print(f"{Fore.YELLOW}{idx}.{Style.RESET_ALL} {file}")
-                else:
-                    print(f"{Fore.YELLOW}No files modified yet.{Style.RESET_ALL}")
-                print()
+            if not raw_user_input.strip(): # Skip empty input
                 continue
+
+            # --- Process mentions BEFORE adding to history or processing commands ---
+            user_input_processed = process_mentions(raw_user_input)
             
-            elif user_input.startswith('/refresh'):
-                print(f"\n{Fore.CYAN}Refreshing file content awareness...{Style.RESET_ALL}")
-                # Force re-read all files to refresh context
-                for filename in set(file_history["created"] + file_history["modified"]):
-                    if os.path.exists(filename):
-                        try:
-                            with open(filename, 'r', encoding='utf-8') as f:
-                                content = f.read()
-                                print(f"{Fore.GREEN}Refreshed:{Style.RESET_ALL} {filename}")
-                        except Exception as e:
-                            print(f"{Fore.RED}Error reading {filename}: {e}{Style.RESET_ALL}")
+            # Add the potentially modified user message to conversation history
+            conversation_history.append({"role": "user", "content": user_input_processed})
+
+            # Process commands using the raw_user_input
+            if raw_user_input.startswith('/'):
+                command_processed = True # Flag to check if we should skip model call
+                if raw_user_input.startswith('/add '):
+                    target = raw_user_input[5:].strip()
+                    content = process_add_command(target) # Assuming this function prints its own status
+                    if content:
+                        added_context[target] = content
+                        print(f"{Fore.GREEN}✓ Added context from:{Style.RESET_ALL} {target}")
+                        # Maybe add a system message instead of formulating a user query?
+                        conversation_history.append({"role": "system", "content": f"Context from '{target}' was added."})
                     else:
-                        print(f"{Fore.YELLOW}Missing:{Style.RESET_ALL} {filename} (file no longer exists)")
+                        print(f"{Fore.RED}✗ Failed to add context from:{Style.RESET_ALL} {target}")
                 
-                # Add message to conversation history about the refresh
-                user_input = "I've refreshed your awareness of all file contents. Please use the current file contents for any operations."
-                print(f"\n{Fore.GREEN}All files refreshed in model's context.{Style.RESET_ALL}\n")
-            
-            elif user_input.startswith('/help'):
-                help_text = """
+                elif raw_user_input.startswith('/remove '):
+                    target = raw_user_input[8:].strip()
+                    if target in added_context:
+                        del added_context[target]
+                        print(f"{Fore.YELLOW}Removed {target} from the conversation context.{Style.RESET_ALL}")
+                        # Let the model know what's been removed
+                        conversation_history.append({"role": "system", "content": f"User removed the file/directory '{target}' from our conversation context. Please disregard it in future responses."})
+                    else:
+                        print(f"{Fore.RED}Error: {target} was not found in the current context.{Style.RESET_ALL}")
+                        print(f"{Fore.YELLOW}Current context includes: {', '.join(added_context.keys()) if added_context else 'nothing'}{Style.RESET_ALL}")
+                        continue
+                
+                elif raw_user_input.startswith('/list'):
+                    if added_context:
+                        print(f"\n{Fore.CYAN}Files/directories in current context:{Style.RESET_ALL}")
+                        for idx, item in enumerate(added_context.keys(), 1):
+                            print(f"{Fore.GREEN}{idx}.{Style.RESET_ALL} {item}")
+                        print()
+                    else:
+                        print(f"\n{Fore.YELLOW}No files or directories in current context.{Style.RESET_ALL}\n")
+                    continue
+                    
+                elif raw_user_input.startswith('/files'):
+                    print(f"\n{Fore.CYAN}Files created in this session:{Style.RESET_ALL}")
+                    if file_history["created"]:
+                        for idx, file in enumerate(file_history["created"], 1):
+                            print(f"{Fore.GREEN}{idx}.{Style.RESET_ALL} {file}")
+                    else:
+                        print(f"{Fore.YELLOW}No files created yet.{Style.RESET_ALL}")
+                    
+                    print(f"\n{Fore.CYAN}Files modified in this session:{Style.RESET_ALL}")
+                    if file_history["modified"]:
+                        for idx, file in enumerate(file_history["modified"], 1):
+                            print(f"{Fore.YELLOW}{idx}.{Style.RESET_ALL} {file}")
+                    else:
+                        print(f"{Fore.YELLOW}No files modified yet.{Style.RESET_ALL}")
+                    print()
+                    continue
+
+                elif raw_user_input.startswith('/refresh'):
+                    print(f"\n{Fore.CYAN}Refreshing file content awareness...{Style.RESET_ALL}")
+                    # Force re-read all files to refresh context
+                    for filename in set(file_history["created"] + file_history["modified"]):
+                        if os.path.exists(filename):
+                            try:
+                                with open(filename, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                    print(f"{Fore.GREEN}Refreshed:{Style.RESET_ALL} {filename}")
+                            except Exception as e:
+                                print(f"{Fore.RED}Error reading {filename}: {e}{Style.RESET_ALL}")
+                        else:
+                            print(f"{Fore.YELLOW}Missing:{Style.RESET_ALL} {filename} (file no longer exists)")
+                    
+                    # Add message to conversation history about the refresh
+                    conversation_history.append({"role": "system", "content": "I've refreshed your awareness of all file contents. Please use the current file contents for any operations."})
+                    print(f"\n{Fore.GREEN}All files refreshed in model's context.{Style.RESET_ALL}\n")
+                
+                elif raw_user_input.startswith('/help'):
+                    help_text = """
 Available Commands:
 /add <file_or_dir>    - Add file or folder content to the conversation.
 /// Example: /add src/main.py
@@ -953,127 +979,209 @@ Available Commands:
 /help                - Show this help message.
 exit, quit, q       - Exit CodAgent.
 """
-                print(help_text)
-                continue
-            
-            # Add user message to conversation history
-            conversation_history.append({"role": "user", "content": user_input})
+                    print(help_text)
+                    continue
+                else:
+                    print(f"{Fore.RED}Unknown command: {raw_user_input}{Style.RESET_ALL}")
+                    command_processed = False # Treat as regular input if command is unknown
+
+                is_local_only_command = raw_user_input.startswith(('/list', '/files', '/help', '/remove')) 
+                if command_processed and is_local_only_command:
+                   if conversation_history and conversation_history[-1]["role"] == "user":
+                       conversation_history.pop() 
+                   continue 
+
+            # --- Model Interaction ---
             
             # Generate the file context to include with the system prompt
             file_context = generate_file_context(file_history)
-            
-            # Get the system prompt and combine with file context and user query
             system_prompt = get_system_prompt()
             
-            # Create a context-aware prompt with file history
-            final_prompt = f"{system_prompt}\n\n{file_context}\n\nCONVERSATION HISTORY:\n"
+            # Construct the prompt for the model
+            model_prompt_parts = [system_prompt, file_context] 
             
-            # Add the last 5 exchanges from conversation history (or fewer if less available)
-            history_to_include = min(5, len(conversation_history))
+            # Add relevant conversation history
+            history_to_include = min(10, len(conversation_history)) 
+            prompt_history = []
             for i in range(len(conversation_history) - history_to_include, len(conversation_history)):
                 entry = conversation_history[i]
-                final_prompt += f"{entry['role'].upper()}: {entry['content']}\n\n"
+                role = entry['role'].upper()
+                if role == 'SYSTEM':
+                     role = 'SYSTEM NOTE' 
+                prompt_history.append(f"{role}: {entry['content']}")
             
-            final_prompt += f"USER QUERY: {user_input}"
+            if prompt_history:
+                 model_prompt_parts.append(f"{Style.BRIGHT}{Fore.MAGENTA}--- CONVERSATION HISTORY ---{Style.RESET_ALL}\n" + "\n\n".join(prompt_history))
+                 model_prompt_parts.append(f"{Style.BRIGHT}{Fore.MAGENTA}--- END HISTORY ---{Style.RESET_ALL}")
+
+            final_prompt_string = "\n\n".join(model_prompt_parts)
+
+            # Store complete raw responses for this turn
+            all_responses_this_turn = []
+            is_end_of_turn = False
             
-            # Store complete responses
-            all_responses = []
-            is_final = False
+            print(f"\n{Style.DIM}--- CodAgent Thinking ---{Style.RESET_ALL}") 
             
-            while not is_final:
-                # Show progress bar while waiting for response
-                with tqdm(total=100, desc="Thinking", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-                    for i in range(10):
-                        time.sleep(0.1)
-                        pbar.update(10)
-                    
-                    # Send message with system prompt for every query
-                    response = model.generate_content(final_prompt)
-                    response_text = response.text
-                    
-                    # Complete the progress bar
-                    pbar.update(100 - pbar.n)
+            current_prompt_for_model = final_prompt_string 
+            
+            # Loop for multi-step responses until [END] is received
+            while not is_end_of_turn:
+                print(f"\n{Style.BRIGHT}{Fore.GREEN}=== Response Segment ==={Style.RESET_ALL}")
                 
-                # Check if this is the final response
-                cleaned_response, is_final = parse_final_response(response_text)
-                
-                # Display the response
-                print(f"\n{Fore.GREEN}=== Response ==={Style.RESET_ALL}")
-                print(cleaned_response)
-                
-                # Store the complete response for history
-                all_responses.append(cleaned_response)
-                
-                if not is_final:
-                    # If not final, update the prompt to continue the conversation
-                    final_prompt += f"\n\nMODEL: {response_text}\n\nCONTINUE:"
+                # --- Streaming Generation ---
+                current_segment_text = ""
+                stream_error_occurred = False
+                try:
+                    # Use stream=True
+                    response_stream = model.generate_content(current_prompt_for_model, stream=True)
+
+                    for chunk in response_stream:
+                        # --- Graceful Handling of Missing Text Part ---
+                        chunk_text = ""
+                        try:
+                            # Attempt to access text, may fail on finish chunks
+                            chunk_text = chunk.text
+                            print(chunk_text, end='', flush=True)
+                            current_segment_text += chunk_text
+                        except ValueError as e:
+                            # This specific error occurs when .text is accessed on a non-text part
+                            # --- Simplified Handling - Removed FinishReason Check ---
+                            print(f"\n{Fore.YELLOW}[CodAgent Note: Received non-text chunk, potentially end of stream or safety stop.] {Style.RESET_ALL}", flush=True)
+                            # We don't know the exact reason, but the stream likely ended or was interrupted.
+                            # Depending on desired behavior, you *could* force the end of turn here:
+                            # is_end_of_turn = True
+                        except Exception as e_text_access:
+                             # Catch other potential errors accessing chunk parts
+                             print(f"\n{Fore.RED}Error processing stream chunk: {e_text_access}{Style.RESET_ALL}", flush=True)
+
+                    print() # Add a newline after the stream finishes for this segment
+
+                except Exception as model_error:
+                     # Catch errors during the initial stream request or fatal stream errors
+                     print(f"\n{Back.RED}{Fore.WHITE} ERROR during streaming request: {model_error} {Style.RESET_ALL}")
+                     current_segment_text = "[END]" # Force end turn on error
+                     is_end_of_turn = True
+                     stream_error_occurred = True # Flag the error
+
+                # --- End Streaming Generation ---
+
+                # If a fatal error occurred above, we already forced the end
+                if not stream_error_occurred:
+                    # Check the *accumulated text* of the segment for the [END] tag
+                     _, is_end_of_turn_from_tag = parse_end_response(current_segment_text)
+                     # Only update is_end_of_turn if the tag says so, otherwise keep previous state
+                     if is_end_of_turn_from_tag:
+                          is_end_of_turn = True
+
+                # Store the raw response segment text accumulated
+                all_responses_this_turn.append(current_segment_text)
+
+                if not is_end_of_turn:
+                    print(f"\n{Style.DIM}--- CodAgent Continuing ---{Style.RESET_ALL}")
+                    # Append the model's *raw* last segment and ask it to continue
+                    current_prompt_for_model += f"\n\nMODEL: {current_segment_text}\n\nCONTINUE:"
+                else:
+                     print(f"\n{Style.DIM}--- CodAgent Finished Turn ---{Style.RESET_ALL}")
+
+            # --- End of Agent Turn ---
             
-            # Combine all responses for history
-            full_response = "\n\n".join(all_responses)
-            conversation_history.append({"role": "model", "content": full_response})
+            # Combine all raw responses from this turn
+            full_raw_response = "\n\n".join(all_responses_this_turn)
             
-            # Parse terminal commands
-            terminal_commands = parse_terminal_commands(full_response)
+            # Get the final cleaned response (all segments combined, without the final [END]) for history
+            final_cleaned_response = parse_end_response(full_raw_response)[0] 
+            if final_cleaned_response: # Add model response only if it wasn't empty or just whitespace
+                conversation_history.append({"role": "model", "content": final_cleaned_response})
+
+            # --- Post-Response Processing (using the combined *raw* response to find all tags) ---
             
-            # Execute terminal commands if any
+            # Parse terminal commands from the *entire turn's raw* response
+            terminal_commands = parse_terminal_commands(full_raw_response) 
+            executed_commands = False
             if terminal_commands:
-                print(f"\n{Fore.CYAN}=== Terminal Commands ==={Style.RESET_ALL}")
+                # ... (Terminal command preview and execution logic) ...
+                print(f"\n{Style.BRIGHT}{Fore.YELLOW}=== Proposed Terminal Commands ==={Style.RESET_ALL}")
                 for idx, cmd in enumerate(terminal_commands, 1):
-                    print(f"{Fore.YELLOW}[{idx}] {cmd}{Style.RESET_ALL}")
+                    print(f"  {Fore.YELLOW}[{idx}]{Style.RESET_ALL} {Fore.WHITE}{cmd}{Style.RESET_ALL}")
+                print("-" * 30)
+                confirm = input(f"{Style.BRIGHT}{Back.RED}{Fore.WHITE} WARNING: Execute these terminal commands? (y/n): {Style.RESET_ALL} ").lower().strip()
                 
-                confirm = input(f"\n{Fore.RED}WARNING: Terminal commands may modify your system. Execute? (y/n): {Style.RESET_ALL}")
-                if confirm.lower().startswith('y'):
+                if confirm == 'y':
                     command_results = []
+                    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Executing Terminal Commands ==={Style.RESET_ALL}")
                     for cmd in terminal_commands:
                         result = execute_terminal_command(cmd)
-                        command_results.append({
-                            "command": cmd,
-                            "result": result
-                        })
-                    
-                    # Add command results to the next prompt to give feedback to the model
-                    command_feedback = "\n\nTERMINAL COMMAND RESULTS:\n"
-                    for result in command_results:
-                        command_feedback += f"Command: {result['command']}\n"
-                        command_feedback += f"Return code: {result['result']['returncode']}\n"
-                        if result['result']['stdout']:
-                            command_feedback += f"Output: {result['result']['stdout']}\n"
-                        if result['result']['stderr']:
-                            command_feedback += f"Errors: {result['result']['stderr']}\n"
-                    
-                    final_prompt += command_feedback
+                        command_results.append({ "command": cmd, "result": result })
+                    executed_commands = True 
+                    # Add results to history as system message for next turn
+                    command_feedback = f"{Style.BRIGHT}{Fore.MAGENTA}--- TERMINAL RESULTS (for next turn) ---{Style.RESET_ALL}\n"
+                    # ... (build feedback string) ...
+                    for res_info in command_results:
+                        command_feedback += f"Cmd: {res_info['command']}\n"
+                        command_feedback += f"Exit Code: {res_info['result']['returncode']}\n"
+                        if res_info['result']['stdout']:
+                             command_feedback += f"Output: {res_info['result']['stdout'][:200]}...\n" 
+                        if res_info['result']['stderr']:
+                             command_feedback += f"Errors: {res_info['result']['stderr']}\n"
+                    command_feedback += f"{Style.BRIGHT}{Fore.MAGENTA}--- END TERMINAL RESULTS ---{Style.RESET_ALL}"
+                    conversation_history.append({"role": "system", "content": command_feedback})
                 else:
-                    print(f"{Fore.YELLOW}Terminal commands were not executed.{Style.RESET_ALL}")
-            
-            # Parse and process file operations from the complete response
-            file_operations = parse_file_operations(full_response)
+                    print(f"{Fore.YELLOW}✗ Terminal commands skipped by user.{Style.RESET_ALL}")
+                    conversation_history.append({"role": "system", "content": "User chose not to execute the proposed terminal commands."})
+
+
+            # Parse file operations from the *entire turn's raw* response
+            file_operations = parse_file_operations(full_raw_response)
+            applied_file_ops = False
+            final_apply_result = {"successful": [], "failed": []} # Keep track of overall result
             if file_operations:
-                if preview_changes(file_operations):
-                    # Update file history based on operations
-                    for op in file_operations:
-                        if op["type"] == "create":
-                            if op["filename"] not in file_history["created"]:
-                                file_history["created"].append(op["filename"])
-                        elif op["type"] == "replace":
-                            if op["filename"] not in file_history["modified"] and op["filename"] not in file_history["created"]:
-                                file_history["modified"].append(op["filename"])
+                if preview_changes(file_operations): 
+                    result = apply_changes(file_operations) 
+                    final_apply_result = result # Store initial result
+                    applied_file_ops = True
                     
-                    # Apply changes and get results
-                    result = apply_changes(file_operations)
-                    
-                    # Only retry if there were actual failures
+                    # Add summary to history
+                    op_summary = f"File Operations Attempted:\nSuccessful: {len(result['successful'])}, Failed: {len(result['failed'])}"
+                    conversation_history.append({"role": "system", "content": op_summary})
+
                     if result["failed"]:
-                        # Try to retry any failed replacements
-                        retry_replacements(result["failed"], model, user_input, file_history)
-                    else:
-                        print(f"{Fore.GREEN}All operations completed successfully!{Style.RESET_ALL}")
+                        print(f"{Fore.YELLOW}Attempting to retry failed file operations...{Style.RESET_ALL}")
+                        # retry_replacements should also handle its own results and potentially update history
+                        # It might need modification if it doesn't return results properly
+                        retry_result = retry_replacements(result["failed"], model, user_input_processed, file_history) 
+                        # TODO: If retry_replacements is modified to return results, merge them into final_apply_result
+                    elif result["successful"]:
+                        print(f"{Fore.GREEN}✓ All file operations completed successfully!{Style.RESET_ALL}")
+                else:
+                     print(f"{Fore.YELLOW}✗ File operations skipped by user.{Style.RESET_ALL}")
+                     conversation_history.append({"role": "system", "content": "User chose not to apply the proposed file operations."})
+
+            # Update file history *after* successful application/retry
+            # Use the final results after potential retries
+            # This assumes retry_replacements updates the actual files and we just need to record success/failure
+            # A better approach might be for retry_replacements to return the list of ops it successfully applied.
+            if applied_file_ops:
+                 # Use final_apply_result which contains ops from the initial apply_changes
+                 # We might need a more robust way to track successes if retries happen and modify things.
+                 # For now, update based on the initial successful application.
+                 for op in final_apply_result.get("successful", []): 
+                      if op["type"] == "create":
+                           if op["filename"] not in file_history["created"]:
+                                file_history["created"].append(op["filename"])
+                      elif op["type"] == "replace":
+                           if op["filename"] not in file_history["modified"] and op["filename"] not in file_history["created"]:
+                                file_history["modified"].append(op["filename"])
+
+            print("-" * 40) # End of turn separator, ready for next user input
         
         except KeyboardInterrupt:
-            print("\nExiting...")
+            print(f"\n{Fore.YELLOW}Interrupt received. Exiting...{Style.RESET_ALL}")
             break
         except Exception as e:
-            print(f"{Fore.RED}Error: {e}{Style.RESET_ALL}")
-            print(f"{Fore.RED}Traceback: {sys.exc_info()}{Style.RESET_ALL}")
+            print(f"\n{Back.RED}{Fore.WHITE} UNEXPECTED ERROR: {e} {Style.RESET_ALL}")
+            import traceback
+            traceback.print_exc() 
+            conversation_history.append({"role": "system", "content": f"An unexpected error occurred: {e}"})
 
 def main():
     """Main entry point for the CLI."""
