@@ -218,6 +218,7 @@ def get_system_prompt():
         -   Each line MUST use the `LINE_NUMBER | CODE` format.
         -   Always add a space after the pipe character (e.g., `1 | def example():`)
         -   The space immediately after the pipe (`|`) will be automatically removed; your indentation starts after that space.
+        -   **EXACT INDENTATION MUST BE PRESERVED** - The code's whitespace after the space following the pipe character is EXACTLY what will appear in the file. For example, `3 |     code` will result in 4 spaces before 'code'.
         -   **To delete a line:** Prefix the line number with `-` (example: `-3 |`)
         -   **DO NOT USE** the deprecated format with `====== TO` or any form that includes old content. This will cause errors.
         -   Line numbers must correspond exactly to the numbered lines you see in the file context.
@@ -246,10 +247,11 @@ def get_system_prompt():
 
 **⚠️ CRITICAL REQUIREMENTS - MUST FOLLOW ⚠️**
 
+*   **INDENTATION IS CRUCIAL IN ALL LANGUAGES:** Maintain exact indentation when editing code files in ANY language. Indentation is not just for Python - it affects readability, functionality, and syntax in all coding languages (JavaScript, HTML, CSS, Java, Ruby, etc). Always preserve the exact number of spaces or tabs in the indentation.
 *   **REPLACE FORMAT IS STRICT:** ONLY use the `====== REPLACE ... ====== REND` format with line numbers and a pipe character.
 *   **NEVER USE `====== TO`:** The older format with `====== TO` will cause errors. DO NOT USE IT UNDER ANY CIRCUMSTANCE.
 *   **LINE NUMBERS ARE MANDATORY:** Every line in a REPLACE block must start with a line number followed by a pipe.
-*   **PROPER INDENTATION:** Always include a space after the pipe, BUT your actual code indentation starts after that space.
+*   **PROPER INDENTATION:** Always include a space after the pipe, BUT your actual code indentation starts after that space. The indentation level in your replaced code MUST match the indentation of the original code exactly, unless you're explicitly changing it.
 *   **LINE DELETION:** Use `-N | ` to delete line N from the file.
 *   **APPENDING CONTENT:** To append content to a file, continue with sequential line numbers starting from the line after the file's current end. 
 *   **VERIFY CONTENT STRUCTURE EXAMPLE:**
@@ -273,6 +275,38 @@ def get_system_prompt():
 *   **Context Reliance:** Base your actions and especially file edits on the provided `--- MENTIONED FILE ---`, `--- CODEBASE STRUCTURE ---`, `--- FILE CONTEXT ---`, `--- SELECTED FILE ---`, and `--- CONVERSATION HISTORY ---` sections.
 *   **Completeness:** Provide functional code snippets or commands.
 *   **Safety:** Be cautious with terminal commands, especially those that modify files or system state (`rm`, `mv`, etc.). Always explain the command's effect.
+*   **Indentation Precision:** Pay extremely close attention to indentation when modifying files, especially in languages where it affects syntax (Python, YAML, etc.) but also in all other languages where it affects readability and maintainability.
+
+**AI-SPECIFIC INDENTATION GUIDANCE:**
+*   AI systems sometimes struggle with preserving exact indentation, especially in non-Python languages. This is NOT acceptable and can break code.
+*   Before finalizing any REPLACE operation, carefully check that:
+    - The indentation pattern matches the code style of the existing file
+    - Spaces vs. tabs match the original file's convention
+    - Block structures (curly braces, brackets, parentheses) maintain proper alignment
+    - Code inside control structures (if/else, loops, functions) maintains correct indentation relative to its container
+    - Alignment of code elements used for readability (aligning parameter lists, object properties, etc.) is preserved
+*   Treat indentation as a first-class concern in ALL languages, not an aesthetic choice.
+
+**INDENTATION EXAMPLES IN DIFFERENT LANGUAGES:**
+
+For ALL programming languages, preserving the exact number of spaces or tabs in indentation is critical:
+
+1. In JavaScript/TypeScript:
+   - Indent levels inside blocks
+   - Alignment of object properties
+   - Proper alignment of function parameters
+
+2. In HTML/XML:
+   - Each nested level should have consistent indentation
+   - Attributes should maintain alignment within tags
+
+3. In CSS/SCSS:
+   - Properties within selectors should be aligned
+   - Nested rules should be properly indented
+
+4. In JSON/YAML:
+   - Object and array nesting must preserve exact indentation
+   - YAML is especially sensitive as indentation determines structure
 
 Remember to use the provided **CONTEXT SECTIONS** below.
 """
@@ -1257,7 +1291,6 @@ def chat_with_model(model):
 
                 # Store the (potentially modified) segment text
                 all_responses_this_turn.append(current_segment_text)
-
                 # Prepare for next segment if needed (only if no END and no ASK)
                 if not is_end_of_turn and not ask_for_files_detected:
                     print(f"\n{Style.DIM}--- CodAgent Continuing ---{Style.RESET_ALL}")
@@ -1271,6 +1304,38 @@ def chat_with_model(model):
             # Combine all raw responses from this turn for history/parsing file ops
             full_raw_response = "\n\n".join(all_responses_this_turn)
 
+            # *** ADDED: File Operation Verification ***
+            segment_file_operations = parse_file_operations(full_raw_response)
+            if segment_file_operations:
+                print("\n" + "="*5 + " File Operations Proposed (Segment) " + "="*5) # Header
+                if preview_changes(segment_file_operations):
+                    segment_apply_result = apply_changes(segment_file_operations)
+                    # Update history - only add success/fail note if changes were applied
+                    op_summary_lines = [f"File Operations Status (Segment):"]
+                    if segment_apply_result['successful']: op_summary_lines.append(f"  {Fore.GREEN}Successful ({len(segment_apply_result['successful'])}):{Style.RESET_ALL} {', '.join(list({op['filename'] for op in segment_apply_result['successful']}))}")
+                    if segment_apply_result['failed']: op_summary_lines.append(f"  {Fore.RED}Failed ({len(segment_apply_result['failed'])}):{Style.RESET_ALL} {', '.join(list({op['filename'] for op in segment_apply_result['failed']}))}")
+                    conversation_history.append({"role": "system", "content": "\n".join(op_summary_lines)})
+                    # Update file history with successful operations
+                    for op in segment_apply_result.get("successful", []):
+                        norm_filename = os.path.normpath(op["filename"])
+                        if op["type"] == "create":
+                            if norm_filename not in file_history["created"]:
+                                file_history["created"].append(norm_filename)
+                            if norm_filename not in file_history["current_workspace"]:
+                                file_history["current_workspace"].append(norm_filename)
+                            if norm_filename in file_history["modified"]:
+                                file_history["modified"].remove(norm_filename)
+                        elif op["type"] == "replace":
+                            if norm_filename not in file_history["modified"] and norm_filename not in file_history["created"]:
+                                file_history["modified"].append(norm_filename)
+                            if norm_filename not in file_history["current_workspace"]:
+                                file_history["current_workspace"].append(norm_filename)
+                else:
+                    print(f"{Fore.YELLOW}✗ File operations skipped by user (segment).{Style.RESET_ALL}")
+                    conversation_history.append({"role": "system", "content": "User skipped proposed file operations (segment)."})
+
+            # *** END ADDED: File Operation Verification ***
+
             # Add final AI response to history (even if asking for files)
             if full_raw_response.strip() and not stream_error_occurred:
                  conversation_history.append({"role": "model", "content": full_raw_response})
@@ -1280,49 +1345,62 @@ def chat_with_model(model):
             # --- Handle ASK_FOR_FILES Interaction ---
             if ask_for_files_detected:
                 print(f"\n{Fore.CYAN}CodAgent is asking for the following files:{Style.RESET_ALL}")
-                for idx, filepath in enumerate(files_to_ask_user_for):
-                    print(f"  {Fore.YELLOW}[{idx+1}]{Style.RESET_ALL} {filepath}")
-
-                selected_indices_str = input(f"{Fore.CYAN}Enter numbers of files to provide (comma-separated, e.g., 1,3), or press Enter to skip: {Style.RESET_ALL}").strip()
+                
+                # Display requested files
+                files_found = []
+                file_options = []
+                for i, filepath in enumerate(files_to_ask_user_for):
+                    if os.path.isfile(filepath):
+                        print(f"{Fore.GREEN}  {i+1}. {filepath} (Found){Style.RESET_ALL}")
+                        files_found.append(filepath)
+                        file_options.append(filepath)
+                    else:
+                        print(f"{Fore.RED}  {i+1}. {filepath} (Not found){Style.RESET_ALL}")
+                
+                # User selection process
                 selected_files_content = ""
                 selected_filenames_for_note = []
-
-                if selected_indices_str:
-                    try:
-                        selected_indices = [int(i.strip()) - 1 for i in selected_indices_str.split(',')]
-                        temp_selected_context = ""
-
-                        for idx in selected_indices:
-                            if 0 <= idx < len(files_to_ask_user_for):
-                                filepath = files_to_ask_user_for[idx]
-                                full_path = os.path.abspath(filepath)
-                                if os.path.exists(full_path) and os.path.isfile(full_path):
+                
+                if files_found:
+                    print(f"\n{Fore.YELLOW}Select files by number (comma-separated) or enter to skip:{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}Example: 1,3 to select first and third files{Style.RESET_ALL}")
+                    selection_input = input(f"{Style.BRIGHT}{Fore.CYAN}Selection: {Style.RESET_ALL}")
+                    
+                    if selection_input.strip():
+                        try:
+                            selected_indices = [int(idx.strip()) - 1 for idx in selection_input.split(',') if idx.strip()]
+                            temp_selected_context = ""
+                            
+                            for idx in selected_indices:
+                                if 0 <= idx < len(file_options):
+                                    selected_filepath = file_options[idx]
+                                    selected_filenames_for_note.append(selected_filepath)
+                                    
                                     try:
-                                        with open(full_path, 'r', encoding='utf-8') as f:
+                                        with open(selected_filepath, 'r', encoding='utf-8') as f:
                                             file_content = f.read()
-                                        print(f"{Fore.GREEN}  ✓ Reading: {filepath} (with line numbers){Style.RESET_ALL}") # Updated print
-                                        # Format with line numbers
-                                        numbered_content = _format_content_with_lines(file_content)
-                                        temp_selected_context += f"\n{Style.BRIGHT}{Fore.MAGENTA}--- SELECTED FILE: {filepath} (Line Numbered) ---{Style.RESET_ALL}\n" # Updated title
-                                        temp_selected_context += f"```\n{numbered_content}\n```\n"
-                                        temp_selected_context += f"{Style.BRIGHT}{Fore.MAGENTA}--- END SELECTED FILE: {filepath} ---{Style.RESET_ALL}\n\n"
-                                        selected_filenames_for_note.append(filepath)
+                                            
+                                            # Format with line numbers
+                                            numbered_content = _format_content_with_lines(file_content)
+                                            
+                                            # Add to the context string
+                                            temp_selected_context += f"\n{Fore.CYAN}=== {selected_filepath} (Line Numbered) ==={Style.RESET_ALL}\n"
+                                            temp_selected_context += f"```\n{numbered_content}\n```\n"
+                                            print(f"{Fore.GREEN}  ✓ Added {selected_filepath}{Style.RESET_ALL}")
                                     except Exception as e:
-                                        print(f"{Fore.RED}  ✗ Error reading {filepath}: {e}{Style.RESET_ALL}")
+                                        print(f"{Fore.RED}  ✗ Error reading {selected_filepath}: {e}{Style.RESET_ALL}")
                                 else:
-                                    print(f"{Fore.RED}  ✗ File not found or not a file: {filepath}{Style.RESET_ALL}")
+                                    print(f"{Fore.RED}  ✗ Invalid number skipped: {idx+1}{Style.RESET_ALL}")
+                            
+                            if temp_selected_context:
+                                # Add a header indicating this context follows the AI's request
+                                selected_files_content = f"{Style.BRIGHT}{Fore.GREEN}--- Providing Content for User-Selected Files ---{Style.RESET_ALL}\n" + temp_selected_context
                             else:
-                                print(f"{Fore.RED}  ✗ Invalid number skipped: {idx+1}{Style.RESET_ALL}")
-
-                        if temp_selected_context:
-                            # Add a header indicating this context follows the AI's request
-                            selected_files_content = f"{Style.BRIGHT}{Fore.GREEN}--- Providing Content for User-Selected Files ---{Style.RESET_ALL}\n" + temp_selected_context
-                        else:
-                             print(f"{Fore.YELLOW}No valid files selected or read.{Style.RESET_ALL}")
-
-                    except ValueError:
-                        print(f"{Fore.RED}Invalid input format. Please enter numbers separated by commas.{Style.RESET_ALL}")
-
+                                print(f"{Fore.YELLOW}No valid files selected or read.{Style.RESET_ALL}")
+                            
+                        except ValueError:
+                            print(f"{Fore.RED}Invalid input format. Please enter numbers separated by commas.{Style.RESET_ALL}")
+                
                 if selected_files_content:
                     pending_context_injection = selected_files_content
                     conversation_history.append({"role": "system", "content": f"User selected and provided content for: {', '.join(selected_filenames_for_note)}"})
@@ -1440,7 +1518,6 @@ def chat_with_model(model):
 
         except KeyboardInterrupt:
             print(f"\n{Fore.YELLOW}Interrupt received. Exiting...{Style.RESET_ALL}")
-            break
         except Exception as e:
             print(f"\n{Back.RED}{Fore.WHITE} UNEXPECTED ERROR: {e} {Style.RESET_ALL}")
             import traceback
