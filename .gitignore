@@ -3,3 +3,4 @@ build/
 
 test/
 codagent/__pycache__/
+.chat.history.codagent
