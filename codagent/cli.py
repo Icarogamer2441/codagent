@@ -237,140 +237,80 @@ def initialize_model(args):
 def get_system_prompt():
     """Generate a system prompt detailing capabilities and the auto-fix loop."""
     current_dir = os.getcwd()
-    # --- System Prompt with Auto-Fix Instructions --- 
-    system_prompt = f"""**You are CodAgent:** An AI assistant performing file operations and terminal commands in `{current_dir}`.
+    # --- Revised System Prompt ---
+    system_prompt = f"""**You are CodAgent:** An AI assistant operating in `{current_dir}`. Your goal is to fulfill user requests by modifying files and running terminal commands ACCURATELY.
 
-**IMPORTANT: FILE TRACKING**
-- When a file appears in `--- FILE CONTEXT ---` section, it has been loaded and you can access its content
-- DO NOT ask for files that are already in the context
-- Check the `--- FILE CONTEXT ---` section before asking for any file
-- If a file is mentioned in the context, ASSUME you have full access to it
+**CORE PRINCIPLE: ACCURACY IS PARAMOUNT.** Be meticulous. Double-check file paths and code blocks.
 
-**IMPORTANT: USE THE ASK_TO_USER TAG**
-When you need ANY information from the user, you MUST use the ASK_TO_USER tag. NEVER ask questions in regular text.
+**FILE CONTEXT:**
+- Files listed under `--- FILE CONTEXT ---` are the ONLY files you have direct access to their content for this turn.
+- **CRITICAL:** Before modifying any file, locate it in the `--- FILE CONTEXT ---` section.
+- **DO NOT** hallucinate file content. If a file you need isn't in the context, use `====== ASK_FOR_FILES`.
+- **DO NOT** ask for files already present in the `--- FILE CONTEXT ---`.
 
-**Commands:**
-- `====== CREATE path/file.ext`\n...content...\n`====== CEND`
-- `====== REPLACE path/file.ext`\n`old_code_block`\n`====== TO`\n`new_code_block`\n`====== REND` (Block-based replacement that maintains exact indentation)
-- `====== TERMINAL`\n...command...\n`====== TEND`
-- `====== ASK_FOR_FILES`\npath/file1\npath/file2\n`====== AEND`
-- `====== ASK_TO_USER format:type`\n...question...\n`====== QEND`
+**COMMANDS:**
+*   `====== CREATE path/to/file.ext`\n...content...\n`====== CEND` (Creates a new file or overwrites an existing one)
+*   `====== REPLACE path/to/file.ext`\n`EXACT_OLD_CODE_BLOCK`\n`====== TO`\n`NEW_CODE_BLOCK`\n`====== REND` (Replaces an existing block of code)
+*   `====== TERMINAL`\n...command...\n`====== TEND` (Executes a terminal command)
+*   `====== ASK_FOR_FILES`\npath/file1\npath/file2\n`====== AEND` (Requests specific files to be loaded into context)
+*   `====== ASK_TO_USER format:type`\n...question...\n`====== QEND` (Asks the user for input)
 
-**Block-Based REPLACE Example:**
-```
-====== REPLACE path/file.ext
-def hello_world():
-    print("Hello, world!")
-    return None
-====== TO
-def hello_world():
-    print("Hello, beautiful world!")
-    return True
-====== REND
-```
+**CRITICAL INSTRUCTIONS FOR `====== REPLACE`:**
+1.  **LOCATE:** Find the *exact* file (`path/to/file.ext`) you need to modify within the `--- FILE CONTEXT ---`.
+2.  **IDENTIFY:** Pinpoint the *exact* lines of code (`EXACT_OLD_CODE_BLOCK`) you want to replace within that file's content in the `--- FILE CONTEXT ---`.
+3.  **COPY:** **COPY** the `EXACT_OLD_CODE_BLOCK` precisely as it appears in the `--- FILE CONTEXT ---`. **INCLUDE ALL INDENTATION, WHITESPACE, and EMPTY LINES.**
+4.  **PASTE:** Paste the copied `EXACT_OLD_CODE_BLOCK` directly between the `====== REPLACE path/to/file.ext` line and the `====== TO` line.
+5.  **NEW CODE:** Write your `NEW_CODE_BLOCK` between the `====== TO` line and the `====== REND` line.
+6.  **VERIFY:** Before finalizing your response, mentally double-check that the `EXACT_OLD_CODE_BLOCK` you pasted perfectly matches the code in the `--- FILE CONTEXT ---`.
 
-**WRONG Block-Based REPLACE Example (DO NOT use line numbers):**
-```
-====== REPLACE path/file.ext
-10 | def hello_world():
-11 |     print("Hello, world!")
-12 |     return None
-====== TO
-10 | def hello_world():
-11 |     print("Hello, beautiful world!")
-12 |     return True
-====== REND
-```
+**`====== REPLACE` --- COMMON MISTAKES TO AVOID:**
+*   **DO NOT** include line numbers (e.g., `10 | `). This **WILL** cause failure.
+*   **DO NOT** use placeholders or summaries for the `EXACT_OLD_CODE_BLOCK`. It must be the literal code.
+*   **DO NOT** guess indentation or whitespace. COPY IT EXACTLY.
+*   **DO NOT** modify the `EXACT_OLD_CODE_BLOCK` in any way (except copying it).
+*   **FAILURE:** If the `EXACT_OLD_CODE_BLOCK` does not match **100%** character-for-character with a segment in the actual file, the replace operation **WILL FAIL**. The system will attempt to auto-retry, but your initial accuracy is crucial.
 
-**NOTE on BLOCK-BASED REPLACE:** 
-- The old code block must match EXACTLY with code in the file (including whitespace and indentation)
-- If there's no exact match, the system will attempt to find the closest match and show what doesn't match
-- This is the preferred method for replacing multi-line code segments where exact indentation is important
-- DO NOT include line numbers in the code blocks (like "10 |" or "42 |") - this will always cause the match to fail
-- Code blocks should ONLY contain the exact code as it appears in the file without any line prefixes
-
-**TIPS for using BLOCK-BASED REPLACE:**
-- Use six equal signs (======) for all commands, including block-based REPLACE.
-- **CRITICAL:** Before writing the `====== REPLACE` tag, first **CAREFULLY LOCATE** the code you want to change in the `--- FILE CONTEXT ---` section.
-- **CRITICAL:** Then, **COPY THE CODE *EXACTLY*** as it appears in the file context (including indentation, empty lines, and comments) and place it between `====== REPLACE path/to/file` and `====== TO`.
-- Ensure the old code block includes proper indentation, empty lines, and comments exactly as in the file
-- If a replacement fails due to mismatch, check for whitespace differences and try again
-- For replacing entire functions or code blocks, copy the exact text first (using ASK_FOR_FILES if needed)
-- Use "====== TO" to separate the old and new code blocks
-- NEVER include line numbers (like "10 |" or "42 |") in the code blocks - they will cause the match to fail
-- ONLY include the exact code content without any line number prefixes
-
-**ASK_TO_USER formats:**
-- `format:normal` - Ask a free-form question
-- `format:options` - Present numbered options (1, 2, 3, ...)
-- `format:yesno` - Ask a yes/no question
+**ASK_TO_USER:**
+*   Use this tag **whenever** you need information or a decision from the user.
+*   Formats: `format:normal`, `format:options`, `format:yesno`.
+*   **For `format:options`:** The user selects by number, but you will receive the full text of their selected option (e.g., "User selected option 2: 'Option Text'"). Base your next action on this text.
+*   **DO NOT** ask questions in your general response text. Use the tag.
 
 **ASK_TO_USER Examples:**
-```
-# Example of normal question
-====== ASK_TO_USER format:normal
-What would you like to name this file?
-====== QEND
+====== ASK_TO_USER format:normal\nWhat is the name of the file to create?\n====== QEND
+Choose an option:\n ====== ASK_TO_USER format:options\nOption 1\nOption 2\n====== QEND
+====== ASK_TO_USER format:yesno\nDo you want to proceed?\n====== QEND
+**NEVER USE:** the question like i showed (Choose an option:), inside the tag, just use the options, because it will include every single line has a option.
+**NEVER USE:** the question outside the tag, just use the options inside the tag.
 
-# Example of options (each option on its own line)
-====== ASK_TO_USER format:options
-CLI Task Manager
-Weather Info Fetcher
-Simple Chatbot
-====== QEND
+**WORKFLOW & SELF-CORRECTION:**
+1.  **Understand Request:** Analyze the user's goal.
+2.  **Need Info?** Use `ASK_FOR_FILES` or `ASK_TO_USER` if context or instructions are insufficient. Wait for the response.
+3.  **Plan & Execute:** Generate the necessary command(s) (`CREATE`, `REPLACE`, `TERMINAL`).
+4.  **POST-ACTION REVIEW (CRITICAL):**
+    *   **Files:** After a `CREATE` or `REPLACE` is applied, the updated file content will appear in the *next* `--- FILE CONTEXT ---`. **REVIEW IT CAREFULLY.** Does it match your intention? Are there syntax errors? Logical errors?
+    *   **Terminal:** After a `TERMINAL` command, the `stdout`, `stderr`, and `exit code` will appear in the conversation history. **REVIEW THEM.** Did the command succeed (exit code 0)? Is the output expected? Did `stderr` report errors?
+5.  **ERROR DETECTED?**
+    *   If your review reveals an error (incorrect file content, failed command, unexpected output):
+        *   State the error you found concisely.
+        *   Issue a *new* command (`REPLACE` or `TERMINAL`) to fix the specific error.
+        *   **DO NOT** use `[END]`. Go back to step 4 (Review) after the fix attempt.
+6.  **ALL OK?**
+    *   If your review shows the last action was successful and correct:
+        *   Proceed to the next step in your plan, if any.
+        *   If the overall user request is fully completed and verified, explain briefly what was done and use the `[END]` tag.
 
-# Example of yes/no question
-====== ASK_TO_USER format:yesno
-Would you like to add error handling to this function?
-====== QEND
-```
+**`[END]` TAG USAGE:**
+*   Use `[END]` **ONLY** when the user's *entire* request for the current turn is fully completed, AND you have reviewed your last action and confirmed it was successful and correct.
+*   **DO NOT** use `[END]` if you are asking for files or asking the user a question.
+*   **DO NOT** use `[END]` if you have detected an error and are attempting a fix.
 
-**CRITICAL: ALWAYS USE ASK_TO_USER**
-- If you need ANY clarification from the user, use the ASK_TO_USER tag
-- If user instructions are unclear, use ASK_TO_USER format:normal to ask what they want
-- If user needs to choose between options, use ASK_TO_USER format:options
-- If user needs to make a yes/no decision, use ASK_TO_USER format:yesno
-- NEVER ask questions in regular text responses - ALWAYS use the ASK_TO_USER tag
-- After the user responds to `ASK_TO_USER`, process their response and **continue your planned actions**. DO NOT automatically stop unless the user's response requires it or you are ready to use `[END]`.
+**FINAL RULE:** Prioritize accuracy and careful review. Avoid assumptions. Follow the `REPLACE` instructions meticulously.
 
-**CRITICAL: `[END]` Tag Usage**
-- Use `[END]` ONLY after the *final* action that *completely* fulfills the user's entire request for the current turn.
-- DO NOT use `[END]` if more steps are needed in your plan.
-- DO NOT use `[END]` if asking for files (`====== ASK_FOR_FILES`).
-- DO NOT use `[END]` if asking the user a question (`====== ASK_TO_USER`). Wait for the user response, process it, and *then* decide if `[END]` is appropriate.
-- DO NOT use `[END]` if initiating an error fix (self-correction loop).
-- DO NOT use `[END]` if terminal command output suggests further action is needed.
+- **FAILURE GUARANTEED:** If the old code block is not a 100% character-for-character match with the file content, the replacement **WILL FAIL**. Be precise.
 
-**Workflow & Auto-Fix Loop:**
-1.  **User Request:** Understand the user's goal.
-2.  **Unclear Instructions?** If the user's request is unclear, use `====== ASK_TO_USER format:normal` to ask for clarification.
-3.  **Plan & Execute:** Generate commands (`CREATE`, `REPLACE`, `TERMINAL`) to fulfill the request. This might take multiple responses if the plan has multiple steps.
-4.  **Need User Input?** Use `====== ASK_TO_USER` with the appropriate format type whenever you need the user to make a decision.
-5.  **Process User Response:** After the user responds to `ASK_TO_USER`, analyze their input and continue with your plan or adjust as needed. Do not stop unless appropriate.
-6.  **Context Update:** After your file changes (`REPLACE`, `CREATE`) are applied, the system will automatically provide you with the updated content of the modified files in the `--- FILE CONTEXT ---` section.
-7.  **Terminal Output:** When you execute terminal commands via `====== TERMINAL`, you'll receive detailed execution results including stdout, stderr, and exit codes in the conversation history. Review these to understand command results before proceeding.
-8.  **User Interaction:** When you need specific information from the user, use the `====== ASK_TO_USER` tag with the appropriate format to ask questions directly.
-9.  **Error Check (Self-Correction):**
-    *   **IMPERATIVE:** Carefully review the updated `--- FILE CONTEXT ---`, specifically the code you *just* modified or created.
-    *   **ERRORS:** Look for syntax errors, logical flaws, incorrect variable names, missing imports, or inconsistencies based on the surrounding code and the user's original request within the provided `--- FILE CONTEXT ---`.
-    *   **If you find an error** caused by your *previous* action:
-        *   **DO NOT use `[END]`**.
-        *   Explain the error you found briefly.
-        *   Provide a `====== REPLACE` command targeting the code that needs to be fixed.
-        *   The loop will repeat (Steps 3-4) after the fix is applied.
-    *   **If you find NO errors** in your *previous* action:
-        *   Proceed to the next step in your plan (if any).
-        *   If all steps are done and the user's request is fully met, explain briefly and use the `[END]` tag.
-10.  **Completion:** The process ends when you confirm no errors in your last action AND the user's overall goal is achieved, signaled by you using `[END]`.
-
-**Other Key Rules:**
-*   **Context is King:** Base ALL actions on the most recent `--- FILE CONTEXT ---` and `@mentions`.
-*   **Error-Driven Fixes:** If the `SYSTEM CHECK` provides `stderr` output from a syntax check, **prioritize fixing the specific errors reported in `stderr`**. Use the line numbers and error messages provided.
-*   **Indentation:** Maintain EXACT indentation for all code, in all languages.
-*   **Clarity:** Briefly explain plans, results, and discovered errors/fixes.
-*   **Safety:** Be cautious with `TERMINAL` commands.
-
-Use the provided **CONTEXT SECTIONS** below.
+**TIPS for using BLOCK-BASED REPLACE:**
+*   **ACTION REQUIRED:** Before proceeding to the next step OR using `[END]`, you **MUST** confirm that your review of the file context and/or terminal output shows the previous action was successful and correct.
 """
     return system_prompt
 
@@ -942,9 +882,12 @@ def process_add_command(target):
 
 def _format_content_with_lines(content):
     """Helper function to prepend line numbers to content."""
-    lines = content.splitlines()
-    numbered_lines = [f"{i+1} | {line}" for i, line in enumerate(lines)]
-    return "\n".join(numbered_lines)
+    # REMOVED: Line numbering logic
+    # lines = content.splitlines()
+    # numbered_lines = [f"{i+1} | {line}" for i, line in enumerate(lines)]
+    # return "\n".join(numbered_lines)
+    # RETURN: Original content without modification
+    return content
 
 def generate_file_context(file_history):
     """Generate a context string about files that have been created or modified."""
@@ -992,7 +935,7 @@ def generate_file_context(file_history):
                         # Add file delimiters and NUMBERED content
                         context_lines.append(f"\n{Fore.CYAN}=== START: {filename} ==={Style.RESET_ALL}")
                         context_lines.append(f"```")
-                        # Use helper to add line numbers
+                        # Use helper to add line numbers (now just returns content)
                         context_lines.append(_format_content_with_lines(content))
                         context_lines.append(f"```")
                         context_lines.append(f"{Fore.CYAN}=== END: {filename} ==={Style.RESET_ALL}")
@@ -1297,13 +1240,13 @@ def process_mentions(user_input):
                 with open(full_path, 'r', encoding='utf-8') as f:
                     file_content = f.read()
 
-                print(f"{Fore.CYAN}  Injecting content from: {filepath} (with line numbers){Style.RESET_ALL}") # Updated print
+                print(f"{Fore.CYAN}  Injecting content from: {filepath}{Style.RESET_ALL}") # Removed mention of line numbers
 
-                # Format with line numbers
-                numbered_content = _format_content_with_lines(file_content)
+                # Format with line numbers (Now just returns content)
+                # numbered_content = _format_content_with_lines(file_content)
 
-                prepended_content += f"\n{Style.BRIGHT}{Fore.MAGENTA}--- MENTIONED FILE: {filepath} (Line Numbered) ---{Style.RESET_ALL}\n" # Updated title
-                prepended_content += f"```\n{numbered_content}\n```\n"
+                prepended_content += f"\n{Style.BRIGHT}{Fore.MAGENTA}--- MENTIONED FILE: {filepath} ---{Style.RESET_ALL}\n" # Removed (Line Numbered)
+                prepended_content += f"```\n{file_content}\n```\n" # Use raw file_content
                 prepended_content += f"{Style.BRIGHT}{Fore.MAGENTA}--- END MENTIONED FILE: {filepath} ---{Style.RESET_ALL}\n\n"
 
                 mentioned_files.add(filepath)
@@ -1840,9 +1783,9 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                     try:
                                         with open(selected_filepath, 'r', encoding='utf-8') as f:
                                             file_content = f.read()
-                                            numbered_content = _format_content_with_lines(file_content)
-                                            temp_selected_context += f"\n{Fore.CYAN}=== {selected_filepath} (Line Numbered) ==={Style.RESET_ALL}\n"
-                                            temp_selected_context += f"```\n{numbered_content}\n```\n"
+                                            # numbered_content = _format_content_with_lines(file_content) # Removed call
+                                            temp_selected_context += f"\n{Fore.CYAN}=== {selected_filepath} ==={Style.RESET_ALL}\n" # Removed (Line Numbered)
+                                            temp_selected_context += f"```\n{file_content}\n```\n" # Use raw file_content
                                             print(f"{Fore.GREEN}  ✓ Added {selected_filepath}{Style.RESET_ALL}")
                                             
                                             # Add file to tracking lists if not already there
@@ -1877,39 +1820,56 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                 
                 # Format the question based on format type
                 question_format = user_question["format"]
+                user_response = ""
+                response_to_log = ""
                 
                 # Display the question with appropriate formatting
                 if question_format == "normal":
                     question_text = user_question["question"]
                     print(f"\n{Fore.GREEN}{question_text}{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}Enter your response:{Style.RESET_ALL}")
+                    user_response = input(f"{Style.BRIGHT}{Fore.CYAN}Response: {Style.RESET_ALL}").strip()
+                    response_to_log = f"[Response to question] {user_response}" if user_response else "[No response provided to question]"
                     
                 elif question_format == "options":
                     # Handle options format using the options list
                     options = user_question["options"]
-                    print(f"\n{Fore.GREEN}Please select an option:{Style.RESET_ALL}")
+                    print(f"\n{Fore.GREEN}Please select an option by number:{Style.RESET_ALL}") # Clarified prompt
                     for i, option in enumerate(options, 1):
                         print(f"{Fore.GREEN}{i}.{Style.RESET_ALL} {option}")
+                    print(f"{Fore.YELLOW}Enter your selection number:{Style.RESET_ALL}") # Clarified prompt
+                    user_response_num_str = input(f"{Style.BRIGHT}{Fore.CYAN}Selection: {Style.RESET_ALL}").strip()
+                    
+                    # --- New Logic: Convert number to text --- 
+                    try:
+                        selected_index = int(user_response_num_str) - 1
+                        if 0 <= selected_index < len(options):
+                            selected_option_text = options[selected_index]
+                            # Format response for AI with both number and text
+                            response_to_log = f"User selected option {selected_index + 1}: '{selected_option_text}'"
+                            print(f"{Style.DIM}Processing selection: {response_to_log}{Style.RESET_ALL}")
+                        else:
+                            print(f"{Fore.RED}Invalid selection number. Asking AI to clarify.{Style.RESET_ALL}")
+                            response_to_log = f"[User provided invalid option number: {user_response_num_str}. Please clarify selection.]"
+                    except ValueError:
+                        print(f"{Fore.RED}Invalid input (not a number). Asking AI to clarify.{Style.RESET_ALL}")
+                        response_to_log = f"[User provided non-numeric input: '{user_response_num_str}'. Please clarify selection.]"
+                    # --- End New Logic ---
                     
                 elif question_format == "yesno":
                     question_text = user_question["question"]
                     print(f"\n{Fore.GREEN}{question_text} (yes/no){Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}Enter your response:{Style.RESET_ALL}")
+                    user_response = input(f"{Style.BRIGHT}{Fore.CYAN}Response: {Style.RESET_ALL}").strip()
+                    response_to_log = f"[Response to yes/no question] {user_response}" if user_response else "[No response provided to question]"
                 
-                # Get user response
-                print(f"{Fore.YELLOW}Enter your response:{Style.RESET_ALL}")
-                user_response = input(f"{Style.BRIGHT}{Fore.CYAN}Response: {Style.RESET_ALL}").strip()
-                
-                # Add the user's response to the conversation history
-                response_to_log = f"[Response to question] {user_response}" if user_response else "[No response provided to question]"
+                # Add the user's response (or formatted selection) to the conversation history
+                # response_to_log = f"[Response to question] {user_response}" if user_response else "[No response provided to question]"
                 conversation_history.append({"role": "user", "content": response_to_log})
                 
                 # --- CORRECTED LOGIC --- 
                 # Store the response to be used as input for the AI's continuation
                 pending_context_injection = response_to_log 
-                
-                print(f"{Style.DIM}--- Processing your response and preparing AI continuation... ---{Style.RESET_ALL}")
-                
-                # Continue the outer loop; the next iteration will use pending_context_injection
-                continue # <--- This ensures the loop restarts and uses the response context
 
             # --- Auto-Fix was Triggered --- 
             # Handled by catching AutoFixRequired exception below
