@@ -28,6 +28,10 @@ set GOOGLE_API_KEY=your_api_key_here
 coda --model gemini-2.5-pro-exp-03-25 # the gemini-2.5-pro-exp-03-25 is the default model
 ```
 
+```bash
+coda --omodel openrouter/quasar-alpha
+```
+
 ## Features
 
 - Interactive chat with Google's Gemini models

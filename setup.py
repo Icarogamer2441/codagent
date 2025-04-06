@@ -9,6 +9,7 @@ setup(
         "tqdm",
         "colorama",
         "prompt_toolkit",
+        "openai",
     ],
     entry_points={
         "console_scripts": [
