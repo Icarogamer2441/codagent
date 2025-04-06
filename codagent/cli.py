@@ -236,12 +236,64 @@ def get_system_prompt():
     # --- System Prompt with Auto-Fix Instructions --- 
     system_prompt = f"""**You are CodAgent:** An AI assistant performing file operations and terminal commands in `{current_dir}`.
 
+**IMPORTANT: FILE TRACKING**
+- When a file appears in `--- FILE CONTEXT ---` section, it has been loaded and you can access its content
+- DO NOT ask for files that are already in the context
+- Check the `--- FILE CONTEXT ---` section before asking for any file
+- If a file is mentioned in the context, ASSUME you have full access to it
+
+**IMPORTANT: USE THE ASK_TO_USER TAG**
+When you need ANY information from the user, you MUST use the ASK_TO_USER tag. NEVER ask questions in regular text.
+
 **Commands:**
 - `====== CREATE path/file.ext`\n...content...\n`====== CEND`
-- `====== REPLACE path/file.ext`\n`N | new_code` (use line number N from context)\n`-M |` (delete line M)\n`====== REND`
+- `======= REPLACE path/file.ext`\n`old_code_block`\n`======= TO`\n`new_code_block`\n`======= REND` (Block-based replacement that maintains exact indentation)
 - `====== TERMINAL`\n...command...\n`====== TEND`
 - `====== ASK_FOR_FILES`\npath/file1\npath/file2\n`====== AEND`
 - `====== ASK_TO_USER format:type`\n...question...\n`====== QEND`
+
+**Block-Based REPLACE Example:**
+```
+======= REPLACE path/file.ext
+def hello_world():
+    print("Hello, world!")
+    return None
+======= TO
+def hello_world():
+    print("Hello, beautiful world!")
+    return True
+======= REND
+```
+
+**WRONG Block-Based REPLACE Example (DO NOT use line numbers):**
+```
+======= REPLACE path/file.ext
+10 | def hello_world():
+11 |     print("Hello, world!")
+12 |     return None
+======= TO
+10 | def hello_world():
+11 |     print("Hello, beautiful world!")
+12 |     return True
+======= REND
+```
+
+**NOTE on BLOCK-BASED REPLACE:** 
+- The old code block must match EXACTLY with code in the file (including whitespace and indentation)
+- If there's no exact match, the system will attempt to find the closest match and show what doesn't match
+- This is the preferred method for replacing multi-line code segments where exact indentation is important
+- DO NOT include line numbers in the code blocks (like "10 |" or "42 |") - this will always cause the match to fail
+- Code blocks should ONLY contain the exact code as it appears in the file without any line prefixes
+
+**TIPS for using BLOCK-BASED REPLACE:**
+- Use seven equal signs (=======) for block-based REPLACE, not six equal signs
+- Ensure the old code block includes proper indentation, empty lines, and comments exactly as in the file
+- If a replacement fails due to mismatch, check for whitespace differences and try again
+- For replacing entire functions or code blocks, copy the exact text first (using ASK_FOR_FILES if needed)
+- Block-based replacement is safer than line-based replacement for complex code changes
+- Use "======= TO" to separate the old and new code blocks
+- NEVER include line numbers (like "10 |" or "42 |") in the code blocks - they will cause the match to fail
+- ONLY include the exact code content without any line number prefixes
 
 **ASK_TO_USER formats:**
 - `format:normal` - Ask a free-form question
@@ -268,34 +320,42 @@ Would you like to add error handling to this function?
 ====== QEND
 ```
 
+**CRITICAL: ALWAYS USE ASK_TO_USER**
+- If you need ANY clarification from the user, use the ASK_TO_USER tag
+- If user instructions are unclear, use ASK_TO_USER format:normal to ask what they want
+- If user needs to choose between options, use ASK_TO_USER format:options
+- If user needs to make a yes/no decision, use ASK_TO_USER format:yesno
+- NEVER ask questions in regular text responses - ALWAYS use the ASK_TO_USER tag
+
 **CRITICAL: `[END]` Tag Usage**
 - Use `[END]` ONLY after the *final* action that *completely* fulfills the user's entire request for the current turn.
 - DO NOT use `[END]` if more steps are needed, if asking for files, or if initiating an error fix (see below).
 - DO NOT use `[END]` in the same segment where you use `====== ASK_TO_USER` to ask a question. Wait for the user's response first.
-- DO NOT make the mistake of using `====== REPLACE` without the `-M |` option when removing obsolete code.
 
 **Workflow & Auto-Fix Loop:**
 1.  **User Request:** Understand the user's goal.
-2.  **Plan & Execute:** Generate commands (`CREATE`, `REPLACE`, `TERMINAL`) to fulfill the request. This might take multiple responses if the plan has multiple steps.
-3.  **Context Update:** After your file changes (`REPLACE`, `CREATE`) are applied, the system will automatically provide you with the updated content of the modified files in the `--- FILE CONTEXT ---` section.
-4.  **Terminal Output:** When you execute terminal commands via `====== TERMINAL`, you'll receive detailed execution results including stdout, stderr, and exit codes in the conversation history. Review these to understand command results before proceeding.
-5.  **User Interaction:** When you need specific information from the user, use the `====== ASK_TO_USER` tag with the appropriate format to ask questions directly.
-6.  **Error Check (Self-Correction):**
+2.  **Unclear Instructions?** If the user's request is unclear, use `====== ASK_TO_USER format:normal` to ask for clarification.
+3.  **Plan & Execute:** Generate commands (`CREATE`, `REPLACE`, `TERMINAL`) to fulfill the request. This might take multiple responses if the plan has multiple steps.
+4.  **Need User Input?** Use `====== ASK_TO_USER` with the appropriate format type whenever you need the user to make a decision.
+5.  **Context Update:** After your file changes (`REPLACE`, `CREATE`) are applied, the system will automatically provide you with the updated content of the modified files in the `--- FILE CONTEXT ---` section.
+6.  **Terminal Output:** When you execute terminal commands via `====== TERMINAL`, you'll receive detailed execution results including stdout, stderr, and exit codes in the conversation history. Review these to understand command results before proceeding.
+7.  **User Interaction:** When you need specific information from the user, use the `====== ASK_TO_USER` tag with the appropriate format to ask questions directly.
+8.  **Error Check (Self-Correction):**
     *   **IMPERATIVE:** Carefully review the updated `--- FILE CONTEXT ---`, specifically the code you *just* modified or created.
     *   **FILE CONTENT:** Read the updated file content carefully using the `====== ASK_FOR_FILES` tag.
     *   **ERRORS:** Look for syntax errors, logical flaws, incorrect variable names, missing imports, or inconsistencies based on the surrounding code and the user's original request.
     *   **If you find an error** caused by your *previous* action: 
         *   **DO NOT use `[END]`**. 
         *   Explain the error you found briefly.
-        *   Provide a `====== REPLACE` command targeting the incorrect lines to fix the error.
+        *   Provide a `======= REPLACE` command targeting the code that needs to be fixed.
         *   The loop will repeat (Steps 3-4) after the fix is applied.
     *   **If you find NO errors** in your *previous* action:
         *   Proceed to the next step in your plan (if any).
         *   If all steps are done and the user's request is fully met, explain briefly and use the `[END]` tag.
-7.  **Completion:** The process ends when you confirm no errors in your last action AND the user's overall goal is achieved, signaled by you using `[END]`.
+9.  **Completion:** The process ends when you confirm no errors in your last action AND the user's overall goal is achieved, signaled by you using `[END]`.
 
 **Other Key Rules:**
-*   **Context is King:** Base ALL actions, especially `REPLACE` line numbers, on the most recent `--- FILE CONTEXT ---` and `@mentions`.
+*   **Context is King:** Base ALL actions on the most recent `--- FILE CONTEXT ---` and `@mentions`.
 *   **Error-Driven Fixes:** If the `SYSTEM CHECK` provides `stderr` output from a syntax check, **prioritize fixing the specific errors reported in `stderr`**. Use the line numbers and error messages provided.
 *   **Indentation:** Maintain EXACT indentation for all code, in all languages.
 *   **Clarity:** Briefly explain plans, results, and discovered errors/fixes.
@@ -497,16 +557,16 @@ def parse_file_operations(response_text):
         else:
              print(f"{Fore.YELLOW}Warning: Skipping CREATE operation for '{filename}' because content was empty after stripping.{Style.RESET_ALL}")
     
-    # --- Simplified Line-Based REPLACE Operation ---
-    replace_pattern = r"^====== REPLACE\s+([^\n]+)\n(.*?)\n====== REND\s*$"
-    # Modified to handle the space after pipe character
-    line_content_pattern = re.compile(r"^\s*(-?\d+)\s*\|(.*?)$", re.DOTALL)
+    # --- Simplified Line-Based REPLACE Operation (old format - keeping for backward compatibility) ---
+    old_replace_pattern = r"^====== REPLACE\s+([^\n]+)\n(.*?)\n====== REND\s*$"
+    # Modified to handle +/- line prefixes and ~ for after-line insertion
+    line_content_pattern = re.compile(r"^\s*([\+\-\~]\d+)\s*\|(.*?)$", re.DOTALL)
     
-    for match in re.finditer(replace_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
+    for match in re.finditer(old_replace_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
         filename = match.group(1).strip()
         raw_lines_block = match.group(2)  # Don't strip - preserve whitespace
 
-        parsed_replacements = [] # List of {"line": N, "new_content": "...", "delete": bool}
+        parsed_replacements = [] # List of {"line": N, "new_content": "...", "delete": bool, "insert": bool}
 
         # --- Parse the block for "N | new_content" lines ---
         block_lines = raw_lines_block.splitlines()
@@ -515,7 +575,11 @@ def parse_file_operations(response_text):
             if line_match:
                 line_num_str = line_match.group(1)
                 is_delete = line_num_str.startswith('-')
-                line_num = int(line_num_str.lstrip('-'))
+                is_exact = line_num_str.startswith('+')  # Changed: + now means exact line
+                is_insert = line_num_str.startswith('~')  # Changed: ~ now means insert after
+                
+                # Get the actual line number
+                line_num = int(line_num_str[1:])  # Always remove the first character (+, - or ~)
                 
                 # Get content after pipe and TRIM EXACTLY ONE SPACE if it exists
                 raw_content = line_match.group(2)
@@ -525,13 +589,25 @@ def parse_file_operations(response_text):
                     parsed_replacements.append({
                         "line": line_num,
                         "new_content": "",  # Empty content for deletion
-                        "delete": True
+                        "delete": True,
+                        "insert": False,
+                        "exact": False
                     })
-                else:
+                elif is_insert:  # ~ for insert after
                     parsed_replacements.append({
                         "line": line_num,
-                        "new_content": new_content,  # Now space after pipe is trimmed
-                        "delete": False
+                        "new_content": new_content,  # Insert after line
+                        "delete": False,
+                        "insert": True,
+                        "exact": False
+                    })
+                elif is_exact:  # + for exact line
+                    parsed_replacements.append({
+                        "line": line_num,
+                        "new_content": new_content,  # Insert at exact line number
+                        "delete": False,
+                        "insert": False,
+                        "exact": True
                     })
             elif line.strip(): # Non-empty line that doesn't match expected format
                  print(f"{Fore.YELLOW}Warning: Skipping unrecognized line in ====== REPLACE block for '{filename}': {line}{Style.RESET_ALL}")
@@ -543,7 +619,44 @@ def parse_file_operations(response_text):
                 "replacements": parsed_replacements # Store the parsed line replacements
             })
         elif filename: # If tag was present but no valid lines found
-             print(f"{Fore.YELLOW}Warning: REPLACE for '{filename}' contained no valid 'N | content' lines.{Style.RESET_ALL}")
+             print(f"{Fore.YELLOW}Warning: REPLACE for '{filename}' contained no valid '+N | content', '-N |', or '~N |' lines.{Style.RESET_ALL}")
+    
+    # --- New Block-Based REPLACE Operation ---
+    new_replace_pattern = r"^======= REPLACE\s+([^\n]+)\n(.*?)\n======= TO\n(.*?)\n======= REND\s*$"
+    
+    for match in re.finditer(new_replace_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
+        filename = match.group(1).strip()
+        old_code_block = match.group(2)
+        new_code_block = match.group(3)
+        
+        # Skip empty replacements
+        if not old_code_block.strip() or not new_code_block.strip():
+            print(f"{Fore.YELLOW}Warning: Skipping block REPLACE for '{filename}' because old or new code block was empty.{Style.RESET_ALL}")
+            continue
+            
+        if not os.path.exists(filename):
+            print(f"{Fore.YELLOW}Warning: File '{filename}' does not exist for block REPLACE operation.{Style.RESET_ALL}")
+            continue
+            
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+                
+            # We need to verify that the old code block exists exactly in the file
+            old_code_lines = old_code_block.splitlines()
+            file_lines = file_content.splitlines()
+            
+            # Create a special operation for block-based replacement
+            file_operations.append({
+                "type": "replace_block",
+                "filename": filename,
+                "old_code": old_code_block,
+                "new_code": new_code_block,
+                "verified": False  # Will be set to True during apply phase if matched
+            })
+                
+        except Exception as e:
+            print(f"{Fore.RED}Error reading file '{filename}' for block REPLACE: {str(e)}{Style.RESET_ALL}")
     
     return file_operations
 
@@ -599,11 +712,46 @@ def preview_changes(file_operations):
                 line_num = change['line']
                 if change.get('delete', False):
                     # Show deletion
-                    preview_content.append(f"{Fore.RED}- {line_num} | (Deleted line){Style.RESET_ALL}")
+                    preview_content.append(f"{Fore.RED}- -{line_num} | (Deleted line){Style.RESET_ALL}")
+                elif change.get('insert', False):
+                    # Show insertion after line
+                    preview_content.append(f"{Fore.BLUE}+ ~{line_num} | {change['new_content']}{Style.RESET_ALL}")
+                elif change.get('exact', False):
+                    # Show exact line insertion
+                    preview_content.append(f"{Fore.MAGENTA}= +{line_num} | {change['new_content']}{Style.RESET_ALL}")
                 else:
-                    # Show EXACT content with all whitespace preserved
-                    preview_content.append(f"{Fore.GREEN}+ {line_num} |{repr(change['new_content'])[1:-1]}{Style.RESET_ALL}")
+                    # This case should never happen with the updated regex, but keep for safety
+                    preview_content.append(f"{Fore.YELLOW}? {line_num} | {change['new_content']} (Unsupported - use +/- prefix){Style.RESET_ALL}")
             
+            preview_content.append("") # Add empty line for spacing
+            
+        # Preview for block-based replacement
+        elif op["type"] == "replace_block":
+            preview_content.append(f"{Style.BRIGHT}{Fore.CYAN}REPLACE CODE BLOCK in File:{Style.RESET_ALL} {Fore.WHITE}{op['filename']}{Style.RESET_ALL}")
+            
+            # Show old code that will be replaced
+            preview_content.append(f"{Fore.YELLOW}Code to be replaced:{Style.RESET_ALL}")
+            old_code_lines = op["old_code"].splitlines()
+            
+            # Show first few lines of old code
+            max_preview_lines = min(5, len(old_code_lines))
+            for line in old_code_lines[:max_preview_lines]:
+                preview_content.append(f"{Fore.RED}- {line}{Style.RESET_ALL}")
+            if len(old_code_lines) > max_preview_lines:
+                preview_content.append(f"{Fore.RED}- ...{Style.RESET_ALL}")
+            
+            preview_content.append(f"{Fore.YELLOW}Will be replaced with:{Style.RESET_ALL}")
+            
+            # Show new code that will replace the old
+            new_code_lines = op["new_code"].splitlines()
+            max_preview_lines = min(5, len(new_code_lines))
+            for line in new_code_lines[:max_preview_lines]:
+                preview_content.append(f"{Fore.GREEN}+ {line}{Style.RESET_ALL}")
+            if len(new_code_lines) > max_preview_lines:
+                preview_content.append(f"{Fore.GREEN}+ ...{Style.RESET_ALL}")
+                
+            # Show line counts for reference
+            preview_content.append(f"{Fore.CYAN}({len(old_code_lines)} lines replaced with {len(new_code_lines)} lines){Style.RESET_ALL}")
             preview_content.append("") # Add empty line for spacing
 
     if not operations_present:
@@ -634,121 +782,65 @@ def apply_changes(file_operations):
 
     for op in file_operations:
         filename = op['filename']
-
+        
+        # Create file operation - existing logic
         if op["type"] == "create":
+            # ... existing code ...
             try:
-                directory = os.path.dirname(filename)
-                if directory and not os.path.exists(directory):
-                    os.makedirs(directory)
-                    apply_log.append(f"{Fore.YELLOW}  Created directory: {directory}{Style.RESET_ALL}")
-                content_to_write = op["content"].replace('\r\n', '\n')
+                # Create parent directories if needed
+                os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+                # Write the file
                 with open(filename, "w", newline='\n') as f:
-                    f.write(content_to_write)
-                apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Created {Fore.WHITE}{filename}{Style.RESET_ALL}")
+                    f.write(op["content"])
+                apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Created file {Fore.WHITE}{filename}{Style.RESET_ALL}")
                 successful_ops.append(op)
             except Exception as e:
-                apply_log.append(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Could not create {Fore.WHITE}{filename}{Style.RESET_ALL}: {e}")
+                apply_log.append(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error creating file {Fore.WHITE}{filename}{Style.RESET_ALL}: {e}")
+                import traceback
+                apply_log.append(f"  {Fore.RED}{traceback.format_exc().splitlines()[-1]}{Style.RESET_ALL}")
                 failed_ops.append(op)
-
-        # ***** MODIFIED: Better indentation handling and line deletion support *****
+                
+        # Line-based replace operation - existing logic
         elif op["type"] == "replace_lines":
+            # ... existing code ...
             try:
-                # Read the original file content
-                original_lines_with_endings = []
-                file_exists = os.path.exists(filename)
+                # Check if file exists first
+                if not os.path.exists(filename):
+                    raise FileNotFoundError(f"File {filename} not found")
                 
-                if file_exists:
-                    with open(filename, "r", newline='') as f:
-                        original_lines_with_endings = f.readlines()
-                else:
-                    # If file doesn't exist, we'll create it - treat it as empty
-                    apply_log.append(f"{Fore.YELLOW}  File {filename} doesn't exist - will create it{Style.RESET_ALL}")
-                    directory = os.path.dirname(filename)
-                    if directory and not os.path.exists(directory):
-                        os.makedirs(directory)
-                        apply_log.append(f"{Fore.YELLOW}  Created directory: {directory}{Style.RESET_ALL}")
-
-                num_original_lines = len(original_lines_with_endings)
+                # Open and read the file
+                with open(filename, 'r', encoding='utf-8') as f:
+                    original_lines_with_endings = f.readlines()  # Keep line endings
+                    original_content = f.read()
                 
-                # Group replacements by line number
-                replacements_map = {}
-                deleted_lines = set()
-                highest_line_num = 0
-                line_validity_passed = True
-                error_details = []
+                # Strip line endings to work with the content
+                original_lines = [line.rstrip('\r\n') for line in original_lines_with_endings]
+                num_original_lines = len(original_lines)
+                
+                # Maps for tracking operations - key is line number (1-based)
+                replacements_map = {}  # Line replacements
+                insertion_map = {}     # Line insertions (after specified line)
+                deleted_lines = set()  # Set of deleted line numbers
+                
+                highest_line_num = 0   # Track highest accessed line for appends
+                line_validity_passed = True  # Flag for overall validation
+                error_details = []     # Collect specific error details
                 
                 # First pass: check line numbers for validity and find highest line
                 for r in sorted(op.get('replacements', []), key=lambda x: x['line']):
-                    line_num = r['line']
-                    
-                    # Mark line for deletion if needed
-                    if r.get('delete', False):
-                        if 1 <= line_num <= num_original_lines:
-                            deleted_lines.add(line_num)
-                        else:
-                            line_validity_passed = False
-                            error_details.append(f"Cannot delete line {line_num} - it doesn't exist (File has {num_original_lines} lines)")
-                        continue
-                    
-                    highest_line_num = max(highest_line_num, line_num)
-                    
-                    # Check if we're appending to the file
-                    if line_num > num_original_lines:
-                        # Only allow appending sequentially from the end of file
-                        if line_num > num_original_lines + 1 and not any(rep['line'] == line_num - 1 for rep in op.get('replacements', [])):
-                            line_validity_passed = False
-                            error_details.append(f"Line number {line_num} creates a gap after file end (File has {num_original_lines} lines)")
-                    
-                    replacements_map[line_num] = r['new_content']
-
-                # Special case: allow appending at the end of the file
-                appending_new_content = highest_line_num > num_original_lines
+                    # ... existing code for line-based replacements ...
+                    pass
+                
+                # Special case: handle exact line insertions beyond file end
+                has_exact_insertions = any(r.get('exact', False) for r in op.get('replacements', []))
                 
                 # Application Step
                 if line_validity_passed:
-                    new_file_lines = []
+                    # ... existing code for applying line-based changes ...
                     
-                    # Process original file content
-                    for i, original_line in enumerate(original_lines_with_endings):
-                        current_line_num = i + 1
-                        
-                        # Skip deleted lines
-                        if current_line_num in deleted_lines:
-                            continue
-                        
-                        if current_line_num in replacements_map:
-                            # Replace with the new content provided (preserving exact whitespace)
-                            new_content_for_line = replacements_map[current_line_num]
-                            # Split potentially multi-line new content
-                            new_content_lines = new_content_for_line.splitlines() if new_content_for_line else [""]
-                            # Add newline consistent with file writing mode ('\n')
-                            for j, new_line in enumerate(new_content_lines):
-                                # If this is an empty line or the last line of a multi-line replacement
-                                # add a newline character
-                                new_file_lines.append(new_line + '\n')
-                        else:
-                            # Keep original line
-                            new_file_lines.append(original_line)
-                    
-                    # Handle appended content
-                    for line_num in range(num_original_lines + 1, highest_line_num + 1):
-                        if line_num in replacements_map:
-                            new_content = replacements_map[line_num]
-                            new_content_lines = new_content.splitlines() if new_content else [""]
-                            for new_line in new_content_lines:
-                                new_file_lines.append(new_line + '\n')
-                    
-                    # Write the modified lines back to the file
-                    with open(filename, "w", newline='\n') as f:
-                        f.writelines(new_file_lines)
-                    
-                    if deleted_lines:
-                        apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Applied line replacements and deleted {len(deleted_lines)} line(s) from {Fore.WHITE}{filename}{Style.RESET_ALL}")
-                    elif appending_new_content:
-                        apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Applied line replacements and appended new content to {Fore.WHITE}{filename}{Style.RESET_ALL}")
-                    else:
-                        apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Applied line replacements to {Fore.WHITE}{filename}{Style.RESET_ALL}")
-                    
+                    # Success message handling...
+                    success_message = f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Applied changes to {Fore.WHITE}{filename}{Style.RESET_ALL}"
+                    apply_log.append(success_message)
                     successful_ops.append(op)
                 else:
                     # Line number verification failed
@@ -765,7 +857,106 @@ def apply_changes(file_operations):
                 import traceback
                 apply_log.append(f"  {Fore.RED}{traceback.format_exc().splitlines()[-1]}{Style.RESET_ALL}")
                 failed_ops.append(op)
-        # ***** END MODIFIED: Better indentation handling *****
+                
+        # --- Block-based replace operation - new logic ---
+        elif op["type"] == "replace_block":
+            try:
+                if not os.path.exists(filename):
+                    raise FileNotFoundError(f"File {filename} not found")
+                    
+                # Read the file content
+                with open(filename, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                
+                # Get the old code and new code from the operation
+                old_code = op["old_code"]
+                new_code = op["new_code"]
+                
+                # Check if old_code exists exactly in the file (with indentation)
+                if old_code in file_content:
+                    # Perfect match found - replace directly
+                    new_content = file_content.replace(old_code, new_code)
+                    
+                    # Write the modified content back to the file
+                    with open(filename, 'w', newline='\n') as f:
+                        f.write(new_content)
+                        
+                    apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Replaced code block in {Fore.WHITE}{filename}{Style.RESET_ALL}")
+                    op["verified"] = True
+                    successful_ops.append(op)
+                else:
+                    # No exact match - need to analyze what doesn't match
+                    old_code_lines = old_code.splitlines()
+                    file_lines = file_content.splitlines()
+                    
+                    # Try to find where the block should be
+                    # First, find all potential starting points by matching the first line
+                    potential_matches = []
+                    
+                    if old_code_lines:
+                        for i in range(len(file_lines) - len(old_code_lines) + 1):
+                            if file_lines[i].rstrip() == old_code_lines[0].rstrip():
+                                potential_matches.append(i)
+                    
+                    # For each potential match, check the whole block
+                    best_match = None
+                    best_match_score = 0
+                    best_mismatches = []
+                    
+                    for start_idx in potential_matches:
+                        match_score = 0
+                        current_mismatches = []
+                        
+                        for j in range(len(old_code_lines)):
+                            if start_idx + j < len(file_lines):
+                                if file_lines[start_idx + j].rstrip() == old_code_lines[j].rstrip():
+                                    match_score += 1
+                                else:
+                                    current_mismatches.append({
+                                        'file_line_num': start_idx + j + 1,  # 1-indexed line number
+                                        'file_line': file_lines[start_idx + j],
+                                        'old_code_line_num': j + 1,  # 1-indexed line number
+                                        'old_code_line': old_code_lines[j]
+                                    })
+                        
+                        if match_score > best_match_score:
+                            best_match_score = match_score
+                            best_match = start_idx
+                            best_mismatches = current_mismatches
+                    
+                    # If we found a reasonable match (>50% matching)
+                    if best_match is not None and best_match_score > len(old_code_lines) / 2:
+                        match_percentage = (best_match_score / len(old_code_lines)) * 100
+                        
+                        # Log the mismatch information
+                        apply_log.append(f"{Fore.YELLOW}⚠ PARTIAL MATCH:{Style.RESET_ALL} Found {match_percentage:.1f}% match in {Fore.WHITE}{filename}{Style.RESET_ALL} at line {best_match + 1}")
+                        apply_log.append(f"{Fore.YELLOW}  The following lines don't match exactly (whitespace/indentation sensitive):{Style.RESET_ALL}")
+                        
+                        for mismatch in best_mismatches:
+                            apply_log.append(f"{Fore.RED}  - File (L{mismatch['file_line_num']}):{Style.RESET_ALL} {repr(mismatch['file_line'])}")
+                            apply_log.append(f"{Fore.RED}  - Old Code (L{mismatch['old_code_line_num']}):{Style.RESET_ALL} {repr(mismatch['old_code_line'])}")
+                            apply_log.append("")  # Empty line for readability
+                    else:
+                        apply_log.append(f"{Fore.RED}✗ NO MATCH:{Style.RESET_ALL} Could not find matching code block in {Fore.WHITE}{filename}{Style.RESET_ALL}")
+                        
+                    # Mark as failed with detailed information for retry
+                    op["match_details"] = {
+                        "has_match": best_match is not None,
+                        "match_line": best_match + 1 if best_match is not None else None,
+                        "match_score": best_match_score,
+                        "total_lines": len(old_code_lines),
+                        "mismatches": best_mismatches
+                    }
+                    failed_ops.append(op)
+            
+            except FileNotFoundError:
+                apply_log.append(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} File {Fore.WHITE}{filename}{Style.RESET_ALL} not found for REPLACE BLOCK.")
+                failed_ops.append(op)
+            except Exception as e:
+                apply_log.append(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error processing REPLACE BLOCK for {Fore.WHITE}{filename}{Style.RESET_ALL}: {e}")
+                import traceback
+                apply_log.append(f"  {Fore.RED}{traceback.format_exc().splitlines()[-1]}{Style.RESET_ALL}")
+                failed_ops.append(op)
 
     # Print the apply log inside a box
     box_color = Fore.RED if failed_ops else Fore.GREEN
@@ -842,15 +1033,22 @@ def generate_file_context(file_history):
         for file in file_history["modified"]:
             context_lines.append(f"- {Fore.WHITE}{file}{Style.RESET_ALL}")
     
-    if not file_history["created"] and not file_history["modified"]:
-        context_lines.append(f"\n{Fore.CYAN}No files created or modified yet this session.{Style.RESET_ALL}")
+    # Add information about all files in workspace
+    context_lines.append(f"\n{Fore.BLUE}Files AVAILABLE in workspace:{Style.RESET_ALL}")
+    files_available = sorted(list(set(file_history["current_workspace"])))
+    if files_available:
+        for file in files_available:
+            context_lines.append(f"- {Fore.WHITE}{file}{Style.RESET_ALL}")
+    else:
+        context_lines.append(f"{Fore.CYAN}No files in workspace yet.{Style.RESET_ALL}")
     
-    # Add CRITICAL warning about using correct filenames
+    # Add CRITICAL warning about using correct filenames and file availability
     context_lines.append(f"\n{Fore.RED}⚠️ CRITICAL:{Style.RESET_ALL} Always use exact filenames from context.")
+    context_lines.append(f"{Fore.RED}⚠️ IMPORTANT:{Style.RESET_ALL} All files listed above are fully AVAILABLE for you to use.")
     
     # Add the CURRENT CONTENT of all created/modified files with line numbers
     context_lines.append(f"\n{Style.BRIGHT}{Fore.MAGENTA}--- CURRENT FILE CONTENTS (Line Numbered) ---{Style.RESET_ALL}") # Updated title
-    all_files = sorted(list(set(file_history["created"] + file_history["modified"])))
+    all_files = sorted(list(set(file_history["created"] + file_history["modified"] + file_history["current_workspace"])))
     
     if not all_files:
          context_lines.append(f"{Fore.CYAN}No files to show content for yet.{Style.RESET_ALL}")
@@ -878,20 +1076,23 @@ def generate_file_context(file_history):
     # print_boxed("File Context", "\n".join(context_lines), color=Fore.MAGENTA, width=100) # Example if we wanted to print it
     
     # Let's add simple delimiters instead of boxing the whole context which could be huge
-    context_header = f"{Style.BRIGHT}{Fore.MAGENTA}--- FILE CONTEXT ---{Style.RESET_ALL}\n"
-    context_footer = f"\n{Style.BRIGHT}{Fore.MAGENTA}--- END FILE CONTEXT ---{Style.RESET_ALL}"
+    context_header = f"{Style.BRIGHT}{Fore.MAGENTA}--- FILE CONTEXT (ALL FILES LISTED HERE ARE AVAILABLE TO YOU) ---{Style.RESET_ALL}\n"
+    context_footer = f"\n{Style.BRIGHT}{Fore.MAGENTA}--- END FILE CONTEXT (DO NOT ASK FOR FILES ALREADY LISTED ABOVE) ---{Style.RESET_ALL}"
     return context_header + "\n".join(context_lines) + context_footer
 
 def retry_failed_replacements(failed_ops, client_or_model, provider, model_name, file_history, conversation_history, max_retries=2): # Updated signature
     """Attempts to automatically retry failed REPLACE operations."""
     retry_attempt = 1
-    # Filter only 'replace_lines' failures for retry now
-    remaining_failed = [op for op in failed_ops if op.get('type') == 'replace_lines']
+    # Filter for retryable failures - now includes both replace_lines and replace_block types
+    remaining_failed = [op for op in failed_ops if op.get('type') in ['replace_lines', 'replace_block']]
     newly_successful = []
-    final_failed = [op for op in failed_ops if op.get('type') != 'replace_lines'] # Pass non-retryable failures through
+    final_failed = [op for op in failed_ops if op.get('type') not in ['replace_lines', 'replace_block']] # Pass non-retryable failures through
 
-    while remaining_failed and retry_attempt <= max_retries:
-        print(f"\n{Fore.YELLOW}--- Attempting Auto-Retry {retry_attempt}/{max_retries} for Failed Line REPLACES ---{Style.RESET_ALL}")
+    # For block replacements, limit retries to 10 attempts
+    max_block_retries = 10
+    
+    while remaining_failed and retry_attempt <= max(max_retries, max_block_retries):
+        print(f"\n{Fore.YELLOW}--- Attempting Auto-Retry {retry_attempt}/{max(max_retries, max_block_retries)} for Failed Replacements ---{Style.RESET_ALL}")
 
         # --- Construct Retry Prompt ---
         retry_prompt_parts = []
@@ -909,32 +1110,64 @@ def retry_failed_replacements(failed_ops, client_or_model, provider, model_name,
              retry_prompt_parts.append(f"{Style.BRIGHT}{Fore.MAGENTA}--- RECENT CONVERSATION HISTORY ---{Style.RESET_ALL}\n" + "\n\n".join(prompt_history_lines))
              retry_prompt_parts.append(f"\n{Style.BRIGHT}{Fore.MAGENTA}--- END HISTORY ---{Style.RESET_ALL}")
 
+        # --- Construct a tailored retry message based on operation types ---
+        line_replace_ops = [op for op in remaining_failed if op.get('type') == 'replace_lines']
+        block_replace_ops = [op for op in remaining_failed if op.get('type') == 'replace_block']
+        
+        retry_message = f"**Retry Request (Attempt {retry_attempt}):** Your previous attempt to replace content in the file(s) below **FAILED**.\n\n"
 
-        # --- ***** SIMPLIFIED RETRY MESSAGE ***** ---
-        retry_message = f"**Retry Request (Attempt {retry_attempt}):** Your previous attempt to use `====== REPLACE` for the file(s) below **FAILED**. This usually means you specified an **invalid line number** (check the line-numbered `--- FILE CONTEXT ---` above).\n\n"
-
-        retry_message += f"**CRITICAL INSTRUCTION:**\n"
-        retry_message += f"1.  **CAREFULLY CHECK** the `--- FILE CONTEXT ---` section provided *above* to find the correct line numbers for your changes.\n"
-        retry_message += f"2.  For **each file** listed below that failed, construct the `====== REPLACE` tag again using the format `NUMBER | NEW_CONTENT` for each line you want to replace.\n"
-        retry_message += f"3.  **ENSURE ALL `NUMBER`s are valid line numbers** present in the file's context.\n\n"
-
-
-        files_to_retry = {op['filename'] for op in remaining_failed}
-        for filename in files_to_retry:
-             retry_message += f"**File to Correct:** `{filename}`\n"
-             retry_message += f"  *Verify line numbers against the line-numbered context above.*\n\n"
-
-
-        retry_message += "**Provide ONLY the corrected `====== REPLACE` tag(s) below using valid line numbers. Do NOT include explanations or `[END]` tags.**"
-        # --- ***** END SIMPLIFIED RETRY MESSAGE ***** ---
-
+        # Handle line-based replace retries (original functionality)
+        if line_replace_ops:
+            retry_message += f"**For LINE-BASED REPLACEMENTS:**\n"
+            retry_message += f"1. **CAREFULLY CHECK** the `--- FILE CONTEXT ---` section provided *above* to find the correct line numbers for your changes.\n"
+            retry_message += f"2. For **each file** listed below with line issues, construct the `====== REPLACE` tag again using the format `NUMBER | NEW_CONTENT` for each line you want to replace.\n"
+            retry_message += f"3. **ENSURE ALL `NUMBER`s are valid line numbers** present in the file's context.\n\n"
+            
+            files_with_line_issues = {op['filename'] for op in line_replace_ops}
+            for filename in files_with_line_issues:
+                retry_message += f"**Line-Based Replace File:** `{filename}`\n"
+                retry_message += f"  *Verify line numbers against the line-numbered context above.*\n\n"
+        
+        # Handle block-based replace retries (new functionality)
+        if block_replace_ops:
+            retry_message += f"**For BLOCK-BASED REPLACEMENTS:**\n"
+            retry_message += f"1. Your attempted replacements using `======= REPLACE` with exact code blocks did not match.\n"
+            retry_message += f"2. Below are details about what didn't match correctly. Please fix your code block to **EXACTLY** match the file contents.\n"
+            retry_message += f"3. Pay special attention to whitespace, indentation, and line breaks.\n\n"
+            
+            for op in block_replace_ops:
+                filename = op['filename']
+                retry_message += f"**Block Replace File:** `{filename}`\n"
+                
+                if op.get('match_details') and op['match_details'].get('has_match'):
+                    # Partial match - show specific mismatches
+                    match_line = op['match_details']['match_line']
+                    match_score = op['match_details']['match_score']
+                    total_lines = op['match_details']['total_lines']
+                    match_percent = (match_score / total_lines) * 100
+                    
+                    retry_message += f"  * Found partial match ({match_percent:.1f}% matching) at line {match_line}\n"
+                    retry_message += f"  * The following lines didn't match (showing file content vs. what you provided):\n\n"
+                    
+                    for mismatch in op['match_details'].get('mismatches', []):
+                        retry_message += f"    - **File Line {mismatch['file_line_num']}:** `{mismatch['file_line']}`\n"
+                        retry_message += f"    - **Your Code Line {mismatch['old_code_line_num']}:** `{mismatch['old_code_line']}`\n\n"
+                else:
+                    # No match found
+                    retry_message += f"  * **NO MATCHING BLOCK FOUND** - Please check the file content carefully and ensure your 'old code' block matches exactly.\n\n"
+                
+                retry_message += f"  * When fixing, use this format:\n"
+                retry_message += f"```\n======= REPLACE {filename}\n<exact old code with correct indentation>\n======= TO\n<new code>\n======= REND\n```\n\n"
+        
+        retry_message += "**Provide ONLY the corrected replacement tag(s) below using valid content. Do NOT include explanations or `[END]` tags.**"
+        
         retry_prompt_parts.append(f"{Fore.RED}{Style.BRIGHT}{retry_message}{Style.RESET_ALL}")
         full_retry_prompt = "\n\n".join(retry_prompt_parts)
-        conversation_history.append({"role": "system", "content": f"Initiating auto-retry {retry_attempt}/{max_retries} for {len(remaining_failed)} failed line REPLACE ops. Emphasizing valid line numbers."})
+        conversation_history.append({"role": "system", "content": f"Initiating auto-retry {retry_attempt}/{max(max_retries, max_block_retries)} for {len(remaining_failed)} failed replacement ops."})
 
         # --- Call Model ---
         # ... (call model, get response) ...
-        print(f"{Style.DIM}--- Asking AI for corrected REPLACE tags... ---{Style.RESET_ALL}")
+        print(f"{Style.DIM}--- Asking AI for corrected replacement operations... ---{Style.RESET_ALL}")
         retry_response_text = ""
         try:
             # --- Use correct API based on provider --- Start
@@ -972,17 +1205,24 @@ def retry_failed_replacements(failed_ops, client_or_model, provider, model_name,
             remaining_failed = []
             break
 
-
         # --- Process Retry Response ---
         retry_file_ops = parse_file_operations(retry_response_text)
-        # Filter only replace_lines ops for the files that failed
-        ops_to_apply_this_retry = [
-            op for op in retry_file_ops
-            if op['filename'] in files_to_retry and op['type'] == 'replace_lines'
-        ]
-
+        
+        # Sort the operations by type - we want to process block replacements first as they're more targeted
+        ops_to_apply_this_retry = []
+        
+        # First add block replacements
+        block_ops = [op for op in retry_file_ops if op.get('type') == 'replace_block' and 
+                     any(failed_op['filename'] == op['filename'] for failed_op in block_replace_ops)]
+        ops_to_apply_this_retry.extend(block_ops)
+        
+        # Then add line replacements
+        line_ops = [op for op in retry_file_ops if op.get('type') == 'replace_lines' and 
+                    any(failed_op['filename'] == op['filename'] for failed_op in line_replace_ops)]
+        ops_to_apply_this_retry.extend(line_ops)
+        
         if not ops_to_apply_this_retry:
-            print(f"{Fore.YELLOW}No valid line REPLACE tags found in AI's retry response for the failed files.{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}No valid replacement tags found in AI's retry response for the failed files.{Style.RESET_ALL}")
         else:
             print(f"{Fore.CYAN}Applying corrections from retry attempt {retry_attempt}...{Style.RESET_ALL}")
             retry_apply_result = apply_changes(ops_to_apply_this_retry) # Apply the parsed ops
@@ -998,18 +1238,37 @@ def retry_failed_replacements(failed_ops, client_or_model, provider, model_name,
                  op_summary_lines.append(f"  {Fore.RED}Failed ({len(retry_apply_result['failed'])}):{Style.RESET_ALL} {', '.join([op['filename'] for op in retry_apply_result['failed']])}")
             conversation_history.append({"role": "system", "content": "\n".join(op_summary_lines)})
 
-            # Update remaining_failed
+            # Update remaining_failed - keep track of operation types separately
             current_remaining = []
-            successfully_retried_ops_identifiers = {(op['filename'], op.get('type')) for op in retry_apply_result.get('successful', [])}
+            
+            # Check which operations are still failing
             for op in remaining_failed:
-                  # Only check replace_lines type now for retry success
-                 if (op['filename'], 'replace_lines') not in successfully_retried_ops_identifiers:
-                      current_remaining.append(op)
+                # Check if this operation was successfully applied in this retry
+                if op['type'] == 'replace_lines':
+                    if not any(success_op['filename'] == op['filename'] and success_op['type'] == 'replace_lines' 
+                              for success_op in retry_apply_result.get('successful', [])):
+                        current_remaining.append(op)
+                elif op['type'] == 'replace_block':
+                    if not any(success_op['filename'] == op['filename'] and success_op['type'] == 'replace_block' 
+                              for success_op in retry_apply_result.get('successful', [])):
+                        # Check max retries for block operations
+                        if op['type'] == 'replace_block' and retry_attempt >= max_block_retries:
+                            final_failed.append(op)
+                        else:
+                            current_remaining.append(op)
+                            
             remaining_failed = current_remaining
 
+        # Stop line-based retries early if we've reached the standard max_retries
+        if retry_attempt >= max_retries:
+            # Move all line-based operations to final_failed
+            line_ops_to_move = [op for op in remaining_failed if op['type'] == 'replace_lines']
+            final_failed.extend(line_ops_to_move)
+            # Keep only block-based operations for further retries
+            remaining_failed = [op for op in remaining_failed if op['type'] == 'replace_block']
 
         retry_attempt += 1
-        if remaining_failed and retry_attempt <= max_retries:
+        if remaining_failed and retry_attempt <= max(max_retries, max_block_retries):
              time.sleep(1)
 
     # ... (final logging and return) ...
@@ -1476,7 +1735,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                     updated_file_context = generate_file_context(file_history)
                                     error_details = "\n".join([f"File: `{fname}`\nError:\n```\n{err}\n```" for fname, err in syntax_errors_found.items()])
                                     affected_filenames = list(syntax_errors_found.keys())
-                                    auto_fix_prompt = f"""{updated_file_context}\n\n{Style.BRIGHT}{Fore.RED}SYSTEM CHECK - SYNTAX ERROR:{Style.RESET_ALL} The following syntax error(s) were detected in the file(s) you just modified:\n\n{error_details}\n\n**Your Task:** Review the errors and the code context above. Provide `====== REPLACE` command(s) to fix **only these specific errors**. Do NOT use `[END]`."""
+                                    auto_fix_prompt = f"""{updated_file_context}\n\n{Style.BRIGHT}{Fore.RED}SYSTEM CHECK - SYNTAX ERROR:{Style.RESET_ALL} The following syntax error(s) were detected in the file(s) you just modified:\n\n{error_details}\n\n**Your Task:** Review the errors and the code context above. Provide `======= REPLACE` command(s) to fix **only these specific errors**. Do NOT use `[END]`."""
                                     pending_context_injection = auto_fix_prompt
                                     conversation_history.append({"role": "system", "content": f"Auto-fix check initiated due to syntax errors in: {', '.join(affected_filenames)}"})                 
                                     raise AutoFixRequired() # Use exception to break inner loop and continue outer
@@ -1567,7 +1826,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                 if files_found:
                     print(f"\n{Fore.YELLOW}Select files by number (comma-separated) or enter to skip:{Style.RESET_ALL}")
                     print(f"{Fore.CYAN}Example: 1,3 to select first and third files{Style.RESET_ALL}")
-                    selection_input = input(f"{Style.BRIGHT}{Fore.CYAN}Selection: {Style.RESET_ALL}")
+                    selection_input = input(f"{Style.BRIGHT}{Fore.CYAN}Selection: {Style.RESET_ALL}").strip()
                     if selection_input.strip():
                         try:
                             selected_indices = [int(idx.strip()) - 1 for idx in selection_input.split(',') if idx.strip()]
@@ -1583,6 +1842,11 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                             temp_selected_context += f"\n{Fore.CYAN}=== {selected_filepath} (Line Numbered) ==={Style.RESET_ALL}\n"
                                             temp_selected_context += f"```\n{numbered_content}\n```\n"
                                             print(f"{Fore.GREEN}  ✓ Added {selected_filepath}{Style.RESET_ALL}")
+                                            
+                                            # Add file to tracking lists if not already there
+                                            norm_filepath = os.path.normpath(selected_filepath)
+                                            if norm_filepath not in file_history["current_workspace"]:
+                                                file_history["current_workspace"].append(norm_filepath)
                                     except Exception as e:
                                         print(f"{Fore.RED}  ✗ Error reading {selected_filepath}: {e}{Style.RESET_ALL}")
                                 else:
@@ -1593,7 +1857,11 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                         except ValueError: print(f"{Fore.RED}Invalid input format. Please enter numbers separated by commas.{Style.RESET_ALL}")
                 if selected_files_content:
                     pending_context_injection = selected_files_content
-                    conversation_history.append({"role": "system", "content": f"User selected and provided content for: {', '.join(selected_filenames_for_note)}"})                 
+                    # Update message to be more explicit about file availability
+                    file_list_formatted = ", ".join([f"`{f}`" for f in selected_filenames_for_note])
+                    conversation_history.append({"role": "system", "content": f"User selected and provided content for: {file_list_formatted}"})
+                    # Add an explicit model acknowledgment that it has access to the files
+                    conversation_history.append({"role": "model", "content": f"I now have access to the following files: {file_list_formatted}. I'll analyze them and proceed with your request."})
                     continue # Continue outer loop immediately
                 else:
                     print(f"{Fore.YELLOW}Skipping file provision. Asking AI to proceed without them.{Style.RESET_ALL}")
