@@ -249,21 +249,29 @@ def get_system_prompt():
 - **DO NOT** ask for files already present in the `--- FILE CONTEXT ---`.
 
 **COMMANDS:**
-*   `====== CREATE path/to/file.ext`\n...content...\n`====== CEND` (Creates a new file or overwrites an existing one)
-*   `====== REPLACE path/to/file.ext`\n`EXACT_OLD_CODE_BLOCK`\n`====== TO`\n`NEW_CODE_BLOCK`\n`====== REND` (Replaces an existing block of code)
-*   `====== TERMINAL`\n...command...\n`====== TEND` (Executes a terminal command)
-*   `====== ASK_FOR_FILES`\npath/file1\npath/file2\n`====== AEND` (Requests specific files to be loaded into context)
-*   `====== ASK_TO_USER format:type`\n...question...\n`====== QEND` (Asks the user for input)
+*   `====== CREATE path/to/file.ext`\\n...content...\\n`====== CEND` (Creates a new file or overwrites an existing one)
+*   `====== REPLACE path/to/file.ext`\\n`EXACT_OLD_CODE_BLOCK`\\n`====== TO`\\n`NEW_CODE_BLOCK`\\n`====== REND` (Replaces an existing **specific block** of code. **CRITICAL:** Requires the `EXACT_OLD_CODE_BLOCK` and the `====== TO` separator. **DO NOT USE** this command to rewrite the entire file; use `====== REWRITE` for that.)
+*   `====== TERMINAL`\\n...command...\\n`====== TEND` (Executes a terminal command)
+*   `====== ASK_FOR_FILES`\\npath/file1\\npath/file2\\n`====== AEND` (Requests specific files to be loaded into context)
+*   `====== ASK_TO_USER format:type`\\n...question...\\n`====== QEND` (Asks the user for input)
+*   `====== REWRITE path/to/file.ext`\\n...new_content...\\n`====== WEND` (Completely overwrites the **entire** file with new_content. Use this if you want to replace everything in the file.)
+
+**CRITICAL RULE FOR ALL COMMANDS:** **NEVER** include markdown code fences (```) within the content portion of **ANY** command tag (`CREATE`, `REPLACE`, `REWRITE`, `TERMINAL`, `ASK_FOR_FILES`, `ASK_TO_USER`). The content should be raw text or code.
 
 **CRITICAL INSTRUCTIONS FOR `====== REPLACE`:**
-1.  **LOCATE:** Find the *exact* file (`path/to/file.ext`) you need to modify within the `--- FILE CONTEXT ---`.
-2.  **IDENTIFY:** Pinpoint the *exact* lines of code (`EXACT_OLD_CODE_BLOCK`) you want to replace within that file's content in the `--- FILE CONTEXT ---`.
-3.  **COPY:** **COPY** the `EXACT_OLD_CODE_BLOCK` precisely as it appears in the `--- FILE CONTEXT ---`. **INCLUDE ALL INDENTATION, WHITESPACE, and EMPTY LINES.**
-4.  **PASTE:** Paste the copied `EXACT_OLD_CODE_BLOCK` directly between the `====== REPLACE path/to/file.ext` line and the `====== TO` line.
-5.  **NEW CODE:** Write your `NEW_CODE_BLOCK` between the `====== TO` line and the `====== REND` line.
-6.  **VERIFY:** Before finalizing your response, mentally double-check that the `EXACT_OLD_CODE_BLOCK` you pasted perfectly matches the code in the `--- FILE CONTEXT ---`.
+1.  **USE CASE:** Use `REPLACE` **ONLY** when you want to substitute a **small, specific section** of code within a larger file.
+2.  **MANDATORY STRUCTURE:** You **MUST** provide the `EXACT_OLD_CODE_BLOCK` (copied from file context) **AND** the `====== TO` separator.
+3.  **FOR FULL REWRITES:** If you intend to replace the **entire content** of the file, you **MUST** use the `====== REWRITE` command instead.
+4.  **LOCATE:** Find the *exact* file (`path/to/file.ext`) you need to modify within the `--- FILE CONTEXT ---`.
+5.  **IDENTIFY:** Pinpoint the *exact* lines of code (`EXACT_OLD_CODE_BLOCK`) you want to replace within that file's content in the `--- FILE CONTEXT ---`.
+6.  **COPY:** **COPY** the `EXACT_OLD_CODE_BLOCK` precisely as it appears in the `--- FILE CONTEXT ---`. **INCLUDE ALL INDENTATION, WHITESPACE, and EMPTY LINES.**
+7.  **PASTE:** Paste the copied `EXACT_OLD_CODE_BLOCK` directly between the `====== REPLACE path/to/file.ext` line and the `====== TO` line.
+8.  **NEW CODE:** Write your `NEW_CODE_BLOCK` between the `====== TO` line and the `====== REND` line.
+9.  **VERIFY:** Before finalizing your response, mentally double-check that the `EXACT_OLD_CODE_BLOCK` you pasted perfectly matches the code in the `--- FILE CONTEXT ---`.
 
 **`====== REPLACE` --- COMMON MISTAKES TO AVOID:**
+*   **DO NOT** omit the `EXACT_OLD_CODE_BLOCK` or the `====== TO` separator. This is **INVALID** use of `REPLACE`. Using `REPLACE` without the old code and the `TO` separator **WILL FAIL**.
+*   **DO NOT** use `REPLACE` to rewrite the entire file. Use `REWRITE` instead.
 *   **DO NOT** include line numbers (e.g., `10 | `). This **WILL** cause failure.
 *   **DO NOT** use placeholders or summaries for the `EXACT_OLD_CODE_BLOCK`. It must be the literal code.
 *   **DO NOT** guess indentation or whitespace. COPY IT EXACTLY.
@@ -271,29 +279,28 @@ def get_system_prompt():
 *   **FAILURE:** If the `EXACT_OLD_CODE_BLOCK` does not match **100%** character-for-character with a segment in the actual file, the replace operation **WILL FAIL**. The system will attempt to auto-retry, but your initial accuracy is crucial.
 
 **ASK_TO_USER:**
-*   Use this tag **whenever** you need information or a decision from the user.
+*   **THIS IS A NON-NEGOTIABLE RULE:** You **MUST** use this tag **exclusively** for **ANY AND ALL** communication that requires input or a decision from the user. This includes asking for information, clarification, options, confirmation, or yes/no answers.
+*   **FAILURE CONDITION:** If you ask a question, present options (even implicitly like "Which one interests you?"), or ask for confirmation in your general response text **OUTSIDE** of this specific tag structure, the system **WILL CONSIDER IT A FAILURE**. Adherence is mandatory.
 *   Formats: `format:normal`, `format:options`, `format:yesno`.
-*   **For `format:options`:** The user selects by number, but you will receive the full text of their selected option (e.g., "User selected option 2: 'Option Text'"). Base your next action on this text.
-*   **DO NOT** ask questions in your general response text. Use the tag.
+*   **For `format:options`:** ONLY list the options, one per line. DO NOT add introductory text like "Choose an option:".
+*   **ABSOLUTELY FORBIDDEN:** Asking questions, presenting options, or asking for confirmation (e.g., "Should I proceed?", "Which project should we start?", "Let me know if you want..." etc.) in your general response text. Use the tag or do not ask.
 
 **ASK_TO_USER Examples:**
-====== ASK_TO_USER format:normal\nWhat is the name of the file to create?\n====== QEND
-Choose an option:\n ====== ASK_TO_USER format:options\nOption 1\nOption 2\n====== QEND
-====== ASK_TO_USER format:yesno\nDo you want to proceed?\n====== QEND
-**NEVER USE:** the question like i showed (Choose an option:), inside the tag, just use the options, because it will include every single line has a option.
-**NEVER USE:** the question outside the tag, just use the options inside the tag.
+====== ASK_TO_USER format:normal\\nWhat is the name of the file to create?\\n====== QEND
+====== ASK_TO_USER format:options\\nOption 1\\nOption 2\\n====== QEND
+====== ASK_TO_USER format:yesno\\nDo you want to proceed?\\n====== QEND
 
 **WORKFLOW & SELF-CORRECTION:**
 1.  **Understand Request:** Analyze the user's goal.
 2.  **Need Info?** Use `ASK_FOR_FILES` or `ASK_TO_USER` if context or instructions are insufficient. Wait for the response.
-3.  **Plan & Execute:** Generate the necessary command(s) (`CREATE`, `REPLACE`, `TERMINAL`).
+3.  **Plan & Execute:** Generate the necessary command(s) (`CREATE`, `REPLACE`, `REWRITE`, `TERMINAL`).
 4.  **POST-ACTION REVIEW (CRITICAL):**
-    *   **Files:** After a `CREATE` or `REPLACE` is applied, the updated file content will appear in the *next* `--- FILE CONTEXT ---`. **REVIEW IT CAREFULLY.** Does it match your intention? Are there syntax errors? Logical errors?
+    *   **Files:** After a `CREATE`, `REPLACE`, or `REWRITE` is applied, the updated file content will appear in the *next* `--- FILE CONTEXT ---`. **REVIEW IT CAREFULLY.** Does it match your intention? Are there syntax errors? Logical errors?
     *   **Terminal:** After a `TERMINAL` command, the `stdout`, `stderr`, and `exit code` will appear in the conversation history. **REVIEW THEM.** Did the command succeed (exit code 0)? Is the output expected? Did `stderr` report errors?
 5.  **ERROR DETECTED?**
     *   If your review reveals an error (incorrect file content, failed command, unexpected output):
         *   State the error you found concisely.
-        *   Issue a *new* command (`REPLACE` or `TERMINAL`) to fix the specific error.
+        *   Issue a *new* command (`REPLACE`, `REWRITE`, or `TERMINAL`) to fix the specific error.
         *   **DO NOT** use `[END]`. Go back to step 4 (Review) after the fix attempt.
 6.  **ALL OK?**
     *   If your review shows the last action was successful and correct:
@@ -307,7 +314,7 @@ Choose an option:\n ====== ASK_TO_USER format:options\nOption 1\nOption 2\n=====
 
 **FINAL RULE:** Prioritize accuracy and careful review. Avoid assumptions. Follow the `REPLACE` instructions meticulously.
 
-- **FAILURE GUARANTEED:** If the old code block is not a 100% character-for-character match with the file content, the replacement **WILL FAIL**. Be precise.
+- **FAILURE GUARANTEED:** If the old code block for `REPLACE` is not a 100% character-for-character match with the file content, the replacement **WILL FAIL**. Be precise.
 
 **TIPS for using BLOCK-BASED REPLACE:**
 *   **ACTION REQUIRED:** Before proceeding to the next step OR using `[END]`, you **MUST** confirm that your review of the file context and/or terminal output shows the previous action was successful and correct.
@@ -544,6 +551,22 @@ def parse_file_operations(response_text):
         except Exception as e:
             print(f"{Fore.RED}Error reading file '{filename}' for block REPLACE: {str(e)}{Style.RESET_ALL}")
     
+    # --- REWRITE Operation --- 
+    rewrite_pattern = r"^====== REWRITE\s+([^\n]+)\n(.*?)\n====== WEND\s*$"
+    for match in re.finditer(rewrite_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
+        filename = match.group(1).strip()
+        raw_content = match.group(2)
+        # We don't need to strip code fences here because the instruction is to never use them inside
+        content = raw_content.strip() 
+        if content: # Allow empty file rewrite?
+            file_operations.append({
+                "type": "rewrite",
+                "filename": filename,
+                "content": content
+            })
+        else:
+            print(f"{Fore.YELLOW}Warning: Skipping REWRITE operation for '{filename}' because content was empty.{Style.RESET_ALL}")
+
     return file_operations
 
 def show_diff(old_lines, new_lines):
@@ -615,6 +638,18 @@ def preview_changes(file_operations):
                 
             # Show line counts for reference
             preview_content.append(f"{Fore.CYAN}({len(old_code_lines)} lines replaced with {len(new_code_lines)} lines){Style.RESET_ALL}")
+            preview_content.append("") # Add empty line for spacing
+
+        # Preview for rewrite operation
+        elif op["type"] == "rewrite":
+            preview_content.append(f"{Style.BRIGHT}{Fore.RED}REWRITE File (Replace Entire Content):{Style.RESET_ALL} {Fore.WHITE}{op['filename']}{Style.RESET_ALL}")
+            preview_content.append(f"{Fore.YELLOW}New Content Preview (first 5 lines):{Style.RESET_ALL}")
+            content_lines = op["content"].splitlines()
+            for line in content_lines[:5]:
+                 preview_content.append(f"{Fore.GREEN}  + {line}{Style.RESET_ALL}") # Use + prefix for clarity
+            if len(content_lines) > 5:
+                 preview_content.append(f"{Fore.GREEN}  + ...{Style.RESET_ALL}")
+            preview_content.append(f"{Fore.CYAN}(Total {len(content_lines)} lines){Style.RESET_ALL}")
             preview_content.append("") # Add empty line for spacing
 
     if not operations_present:
@@ -823,6 +858,22 @@ def apply_changes(file_operations):
                 failed_ops.append(op)
             except Exception as e:
                 apply_log.append(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error processing REPLACE BLOCK for {Fore.WHITE}{filename}{Style.RESET_ALL}: {e}")
+                import traceback
+                apply_log.append(f"  {Fore.RED}{traceback.format_exc().splitlines()[-1]}{Style.RESET_ALL}")
+                failed_ops.append(op)
+
+        # --- REWRITE operation - new logic ---
+        elif op["type"] == "rewrite":
+            try:
+                # Create parent directories if they don't exist
+                os.makedirs(os.path.dirname(os.path.abspath(filename)), exist_ok=True)
+                # Overwrite the file completely
+                with open(filename, "w", newline='\n') as f:
+                    f.write(op["content"])
+                apply_log.append(f"{Fore.GREEN}✓ SUCCESS:{Style.RESET_ALL} Rewrote file {Fore.WHITE}{filename}{Style.RESET_ALL}")
+                successful_ops.append(op)
+            except Exception as e:
+                apply_log.append(f"{Fore.RED}✗ FAILED:{Style.RESET_ALL} Error rewriting file {Fore.WHITE}{filename}{Style.RESET_ALL}: {e}")
                 import traceback
                 apply_log.append(f"  {Fore.RED}{traceback.format_exc().splitlines()[-1]}{Style.RESET_ALL}")
                 failed_ops.append(op)
@@ -1950,7 +2001,7 @@ def main():
     # Pass all args to the initializer
     client_or_model, provider, model_name_used = initialize_model(args)
 
-    # Start chat with the initialized model/client
+    # Start chat with the initialized model
     chat_with_model(client_or_model, provider, model_name_used)
 
 
