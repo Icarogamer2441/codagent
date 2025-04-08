@@ -382,7 +382,10 @@ here
 ```
 ====== REND
 
-**VERY IMPORTANT:** the finish of every tag, uses the ======, so, replace is ====== REND, create is ====== CEND, and etc
+**VERY IMPORTANT:** the finish of every tag, uses the ======, so, replace is ====== REND, create is ====== CEND, and etc. the amount of = is 6 for every tag
+**GOOD ACTION:** you can also document the project on a README.md for the user read or for other users who are testing the project and want to know what it is, its features or how to use/run them
+**SUPER VERY IMPORTANT:** when using replace tag, always use the old code exactly the old code you want to change, because this is very important for the parser and interpreter of the tags to know what's the exact code you're trying to modify
+**SUPER IMPORTANT:** the end tag of REWRITE is WEND, not CEND, remember this, and the QEND (from ASK_TO_USER end of tag) uses 6 = at the beginning, like this: ====== QEND just like every other tag end
 """
     return system_prompt
 
