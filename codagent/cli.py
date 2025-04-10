@@ -256,10 +256,14 @@ def get_system_prompt(is_reminder=False): # Added is_reminder argument
 **Think:** "Is my work for *this specific request* finished?" If yes, use `[END]`. If no, continue without it.
 --- END [END] TAG ---
 
+--- FILE HANDLING REMINDER ---
+*   File content is **NOT** automatically available. Use `@mention` or `ASK_FOR_FILES`.
+*   **CRITICAL:** If the conversation history shows the user JUST provided content for a file (via `@mention` or you used `ASK_FOR_FILES` and received it), **DO NOT immediately ask for that SAME file again**. Proceed with analyzing or modifying the content you received. Check the history first!
+--- END FILE HANDLING REMINDER ---
+
 tags: `TERMINAL`, `REPLACE/TO`, `REWRITE`, `CREATE`, `ASK_FOR_FILES`, `ASK_TO_USER`
 
 **CRITICAL:** Use `====== END` to terminate **ALL** command blocks (TERMINAL, CREATE, REPLACE, REWRITE, ASK_FOR_FILES, ASK_TO_USER).
-**CRITICAL:** File content is **NOT** automatically included in the context. Use `@filepath` or `ASK_FOR_FILES` to request content before making changes.
 
 **Examples:**
 ====== TERMINAL
