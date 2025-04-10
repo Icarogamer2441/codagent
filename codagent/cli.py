@@ -24,6 +24,8 @@ import glob
 import subprocess
 from prompt_toolkit.formatted_text import ANSI
 import difflib
+import threading # Need to import threading
+import signal # Needed for sending signals in interrupt handler
 
 # Initialize colorama
 colorama.init(autoreset=True)
@@ -234,165 +236,138 @@ def initialize_model(args):
             print(f"{Fore.RED}Error initializing Google Gemini model '{args.model}': {e}{Style.RESET_ALL}")
             sys.exit(1) # Corrected indentation
 
-def get_system_prompt():
+def get_system_prompt(is_reminder=False): # Added is_reminder argument
     """Generate a system prompt detailing capabilities and the auto-fix loop."""
     current_dir = os.getcwd()
+    reminder_prefix = "**Reminder of Operating Instructions:**\n\n" if is_reminder else "" # Added reminder prefix
     # --- Revised System Prompt ---
-    system_prompt = f"""**You are CodAgent:** An AI assistant operating in `{current_dir}`. Your goal is to fulfill user requests by modifying files and running terminal commands ACCURATELY.
+    system_prompt = f"""{reminder_prefix}**You are CodAgent:** An AI assistant operating in `{current_dir}`. Your goal is to fulfill user requests by modifying files and running terminal commands ACCURATELY.
+
+--- [END] TAG - CRITICAL USAGE ---
+**Use `[END]` ONLY when:**
+1. You have **FULLY COMPLETED ALL** planned steps for the user's current request.
+2. Your response is a **single, complete answer** to a question that doesn't require further action from you.
+3. You have just used `ASK_TO_USER` or `ASK_FOR_FILES` and are **waiting for the user's input**.
+
+**DO NOT use `[END]` if:**
+- You still have more steps in your plan to execute.
+- Your response requires follow-up actions from you (unless it's asking the user).
+
+**Think:** "Is my work for *this specific request* finished?" If yes, use `[END]`. If no, continue without it.
+--- END [END] TAG ---
 
 tags: `TERMINAL`, `REPLACE/TO`, `REWRITE`, `CREATE`, `ASK_FOR_FILES`, `ASK_TO_USER`
+
+**CRITICAL:** Use `====== END` to terminate **ALL** command blocks (TERMINAL, CREATE, REPLACE, REWRITE, ASK_FOR_FILES, ASK_TO_USER).
+**CRITICAL:** File content is **NOT** automatically included in the context. Use `@filepath` or `ASK_FOR_FILES` to request content before making changes.
 
 **Examples:**
 ====== TERMINAL
 ls -a
-====== TEND
+====== END
 
 ====== CREATE mynewfile.js
 code...
-====== CEND
+====== END
 
 ====== REWRITE myfile.js
 newcode...
-
 this replaces the old code of file with a new one you write here
-====== WEND
+====== END
 
-====== REPLACE
-acurrate
-    old code
-
-with identation
-if
-    it
-        uses it
+====== REPLACE myfile.py
+    old code line 1
+    old code line 2
 ====== TO
-new code
-    that replaces the old
-    and can even add new code
-
-if you write the new code with more lines than the old one
-====== REND
+    new code line 1
+    new code line 2
+    new code line 3
+====== END
 
 ====== ASK_FOR_FILES
 file1
 file2
 file3
 ...
-====== AEND
+====== END
 
 your question
 ====== ASK_TO_USER format:options
 option1
 option2
 ...
-====== QEND
+====== END
 
 ====== ASK_TO_USER format:normal
 your question for the user
-====== QEND
+====== END
 
 ====== ASK_TO_USER format:yesno
 your yes or no question
-====== QEND
+====== END
 
-you're a agent, and you need to do things step by step, and if you already finished your plan and steps, you can use [END]
+**Example of Multi-Step Plan:**
+user: create a pygame snake game
 
-**Example of [END]:**
-user: create a new simple but super cool snake game in pygame
+AI (1): Okay, plan: 1. Ask for main.py content, 2. Create player.py, 3. Ask for player.py content, 4. Update main.py. Starting step 1.
+====== ASK_FOR_FILES
+main.py
+====== END
+[END] # Waiting for user
 
-AI (1): okay, here is the plan:
-...
-...
-
-now lets implement it
-
-first, lets create the main file
-
-AI (2):
-====== CREATE main.py
-code here
-...
-====== CEND
-
-AI (3): now lets create the file for the player
+AI (2): (After user provides main.py) Step 2: Creating player file.
 ====== CREATE player.py
-...
-====== CEND
+# player code
+====== END
 
-AI (4): now lets modify the main.py to use the player.py
+AI (3): Step 3: Asking for player.py content to verify.
+====== ASK_FOR_FILES
+player.py
+====== END
+[END] # Waiting for user
 
-===== REPLACE main.py
-import pygame as pg
-===== TO
-import pygame as pg
-import player
-===== REND
+AI (4): (After user provides player.py) Step 4: Updating main.py (using content from step 1).
+====== REPLACE main.py
+# old import
+====== TO
+# new import
+====== END
 
-AI (5): now that we made everything, i can finish my plan.
-
-if you need to modify or do anything, just ask me!
+AI (5): All steps complete. The snake game files are ready.
 [END]
 
-**Another example but for one single response/iteration:**
-
-user: how to i show you the codebase or mention a file?
-
-AI (1): you can use `@codebase` and for files, you can use `@path/for/file`, but without the `, obviously
+**Example of Single Response:**
+user: how do i use @codebase?
+AI (1): You can use `@codebase` to show me the project structure.
 [END]
 
-the [END] is important if the user just ask something or say something like "Hello", or etc, because this don't need a plan, so, you can use end to don't be in a loop of the system prompt asking you to continue
-**DO NOT:** use [END] if you still need to do another step
-**ALWAYS:** use [END] if you're not in a plan and need to make the user repond you if needed, and if you're trying to respond a single response
 **ALWAYS:** use the ASK_TO_USER tag for questions, like with options, normal questions and yes or no questions
 **ALWAYS:** use REPLACE/TO tag within big files, because this is more helpful, no one wants to rewrite the code of 500+ lines of code!
 **ALWAYS:** use TO in replace, because the logic is simple and makes sence:
-**CRITICAL:** **ALWAYS** use [END] if you like i said, ended of finished some kind of plan, steps or response, because if you don't use, you'll be in a loop of CONTINUE and you'll never stop modifying the code or sending responses, and i'll never get the request of the user again.
+**CRITICAL:** **ALWAYS** use [END] if you have finished some kind of plan, steps or response, because if you don't use, you'll be in a loop of CONTINUE and you'll never stop modifying the code or sending responses, and i'll never get the request of the user again.
 
 replace the code selected here
 ====== REPLACE file.ext
 old code
 ====== TO
 to this new one here
-====== REND
+====== END
 end the REPLACE/TO tag
 
-**IMPORTANT:** if you want to replace the whole content of a file, please, use the REWRITE tag, because the REPLACE/TO (like the name says) needs the TO, if you don't use the TO, the interpreter thinks there is no replace and do nothing, just continues like nothing happend, so, just use REPLACE to replace certain blocks of code you want, not the whole file content (remember to always use the TO when using REPLACE)
-**IMPORTANT:** never use REWRITE has REPLACE/TO, because like i said, it rewrites the whole content of a file to the new one you wrote
-**CRITICAL:** Also, never use ``` inside tags, outsite is possible, but inside, NAH, this will detect the ``` as part of the content inside the tag
+**IMPORTANT:** To modify **multiple, non-contiguous code blocks** within the **SAME file** in one response, use a **SEPARATE** `====== REPLACE ... ====== TO ... ====== END` block for **EACH** modification. Do not combine unrelated changes into one large block.
+**IMPORTANT:** If you want to replace the **whole content** of a file, please, use the `REWRITE` tag. Use `REPLACE`/`TO` only for specific blocks, not the entire file content. Remember to always use `TO` when using `REPLACE`.
+**IMPORTANT:** Never use `REWRITE` like `REPLACE/TO`, because it rewrites the whole file content.
+**CRITICAL:** Also, never use ``` inside tags, outsite is possible, but inside? NAH, this will detect the ``` as part of the content inside the tag
 
-**CORRECT:**
-```txt (or without the ``` like i said (recommended))
-====== REPLACE idk.ext
-old code
-====== TO
-new code
-here
-====== REND
-```
-
-**NOT CORRECT:**
-====== REPLACE idk.ext
-```txt
-old code
-```
-====== TO
-```txt
-new code
-here
-```
-====== REND
-
-**VERY IMPORTANT:** the finish of every tag, uses the ======, so, replace is ====== REND, create is ====== CEND, and etc. the amount of = is 6 for every tag
+**VERY IMPORTANT:** the finish of every tag now uses `====== END`. The amount of = is 6.
 **GOOD ACTION:** you can also document the project on a README.md for the user read or for other users who are testing the project and want to know what it is, its features or how to use/run them
-**SUPER VERY IMPORTANT:** when using replace tag, always use the old code exactly the old code you want to change, because this is very important for the parser and interpreter of the tags to know what's the exact code you're trying to modify
-**SUPER IMPORTANT:** the end tag of REWRITE is WEND, not CEND, remember this, and the QEND (from ASK_TO_USER end of tag) uses 6 = at the beginning, like this: ====== QEND just like every other tag end
 """
     return system_prompt
 
 def parse_ask_for_files(response_text):
     """Parse the response text to extract suggested files from ====== ASK_FOR_FILES tag."""
-    # Use re.MULTILINE and re.DOTALL. Match content between the tags.
-    ask_pattern = r"^====== ASK_FOR_FILES\s*\n(.*?)\n====== AEND\s*$"
+    # Use re.MULTILINE and re.DOTALL. Match content between the tags. Use generic END.
+    ask_pattern = r"^====== ASK_FOR_FILES\s*\n(.*?)\n====== END\s*$" # Changed AEND to END
     match = re.search(ask_pattern, response_text, re.DOTALL | re.MULTILINE | re.IGNORECASE)
     if match:
         content = match.group(1).strip()
@@ -404,25 +379,25 @@ def parse_ask_for_files(response_text):
 
 def parse_ask_to_user(response_text):
     """Parse the response text to extract user questions from ====== ASK_TO_USER tag."""
-    # Use re.MULTILINE and re.DOTALL to match content between the tags
-    ask_pattern = r"^====== ASK_TO_USER format:(\w+)\s*\n(.*?)\n====== QEND\s*$"
+    # Use re.MULTILINE and re.DOTALL to match content between the tags. Use generic END.
+    ask_pattern = r"^====== ASK_TO_USER format:(\w+)\s*\n(.*?)\n====== END\s*$" # Changed QEND to END
     match = re.search(ask_pattern, response_text, re.DOTALL | re.MULTILINE | re.IGNORECASE)
     if match:
         question_format = match.group(1).strip().lower()
         content = match.group(2).strip()
-        
+
         # Validate format type
         if question_format not in ['normal', 'options', 'yesno']:
             question_format = 'normal'  # Default to normal if invalid format
-        
+
         # For options format, parse the content as a list of options
         if question_format == 'options':
             # Extract options as separate lines, ignoring empty lines and comments
-            options = [line.strip() for line in content.splitlines() 
+            options = [line.strip() for line in content.splitlines()
                       if line.strip() and not line.strip().startswith('#')]
             # Return question_data with the options list
             question_data = {
-                "format": question_format, 
+                "format": question_format,
                 "options": options
             }
         else:
@@ -431,10 +406,10 @@ def parse_ask_to_user(response_text):
                 "format": question_format,
                 "question": content
             }
-            
+
         response_without_tag = response_text[:match.start()] + response_text[match.end():]
         return question_data, response_without_tag.strip()
-    
+
     return None, response_text  # Return None if tag not found or empty
 
 def parse_end_response(response_text):
@@ -451,9 +426,9 @@ def parse_terminal_commands(response_text):
     """Parse the response text to extract terminal commands."""
     terminal_commands = []
 
-    # Find TERMINAL commands using the new format
+    # Find TERMINAL commands using the new format. Use generic END.
     # Use re.MULTILINE and re.DOTALL
-    terminal_pattern = r"^====== TERMINAL\s*\n(.*?)\n====== TEND\s*$"
+    terminal_pattern = r"^====== TERMINAL\s*\n(.*?)\n====== END\s*$" # Changed TEND to END
     for match in re.finditer(terminal_pattern, response_text, re.DOTALL | re.MULTILINE | re.IGNORECASE):
         command = match.group(1).strip()
         terminal_commands.append(command)
@@ -461,90 +436,159 @@ def parse_terminal_commands(response_text):
     return terminal_commands
 
 def execute_terminal_command(command):
-    """Execute a terminal command and capture its output."""
-    # Keep immediate execution log outside the final box for clarity
+    """Execute a terminal command, capture its output, show live output, and handle Ctrl+C."""
     print("-" * 30)
     print(f"{Style.BRIGHT}{Fore.YELLOW}Executing Command:{Style.RESET_ALL} {Fore.WHITE}{command}{Style.RESET_ALL}")
+    print(f"{Fore.MAGENTA}--- Live Output Start (Press Ctrl+C to interrupt command) ---{Style.RESET_ALL}")
 
-    output = ""
-    errors = ""
-    return_code = -1
-    exec_log = [] # Log for the final box
-    ai_response_log = [] # New log specifically formatted for AI consumption
+    output_lines = []
+    error_lines = []
+    return_code = None
+    interrupted = False
+    process = None # Initialize process variable
 
-    # **** ADDED: Explicit command line inside the box content ****
-    exec_log.append(f"{Style.BRIGHT}Command:{Style.RESET_ALL} {command}")
-    exec_log.append(H * visible_len(f"Command: {command}")) # Add a separator line
-    # **** END ADDED ****
+    stdout_data = {"lines": [], "lock": threading.Lock()}
+    stderr_data = {"lines": [], "lock": threading.Lock()}
 
-    # **** ADDED: AI-specific log format ****
-    ai_response_log.append(f"Command: {command}")
-    # **** END ADDED ****
+    def read_stream(stream, data):
+        """Reads lines from a stream and prints them live."""
+        try:
+            for line in iter(stream.readline, ''):
+                line_stripped = line.rstrip() # Keep original line ending for printing? No, strip for consistency.
+                print(line_stripped, flush=True) # Print live output
+                with data["lock"]:
+                    data["lines"].append(line_stripped) # Store for final log
+            stream.close()
+        except Exception as e:
+            # Handle potential errors during stream reading (e.g., decoding errors)
+            error_message = f"[Stream reading error: {e}]"
+            print(error_message, flush=True)
+            with data["lock"]:
+                data["lines"].append(error_message)
+
 
     try:
-        result = subprocess.run(
-            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, check=False
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8', # Be explicit about encoding
+            errors='replace', # Replace characters that cause decoding errors
+            bufsize=1 # Line-buffered
         )
-        output = result.stdout.strip()
-        errors = result.stderr.strip()
-        return_code = result.returncode
 
-        if output:
-            exec_log.append(f"{Fore.CYAN}--- Output ---{Style.RESET_ALL}")
-            exec_log.extend(output.splitlines()) # Add each line separately
-            exec_log.append(f"{Fore.CYAN}--------------{Style.RESET_ALL}")
-            
-            # **** ADDED: AI-specific log format for stdout ****
-            ai_response_log.append(f"--- STDOUT ---")
-            ai_response_log.extend(output.splitlines())
-            ai_response_log.append("-------------")
-            # **** END ADDED ****
+        stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, stdout_data))
+        stderr_thread = threading.Thread(target=read_stream, args=(process.stderr, stderr_data))
 
-        if errors:
-            exec_log.append(f"{Fore.RED}--- Errors ---{Style.RESET_ALL}")
-            exec_log.extend(errors.splitlines())
-            exec_log.append(f"{Fore.RED}------------{Style.RESET_ALL}")
-            
-            # **** ADDED: AI-specific log format for stderr ****
-            ai_response_log.append(f"--- STDERR ---")
-            ai_response_log.extend(errors.splitlines())
-            ai_response_log.append("-------------")
-            # **** END ADDED ****
+        stdout_thread.start()
+        stderr_thread.start()
 
-        if return_code == 0:
-             exec_log.append(f"{Fore.GREEN}✓ Command finished successfully (Exit Code: 0){Style.RESET_ALL}")
-             # **** ADDED: AI-specific log format for exit code ****
-             ai_response_log.append(f"Exit Code: 0 (Success)")
-             # **** END ADDED ****
-        else:
-             exec_log.append(f"{Fore.RED}✗ Command failed (Exit Code: {return_code}){Style.RESET_ALL}")
-             # **** ADDED: AI-specific log format for exit code ****
-             ai_response_log.append(f"Exit Code: {return_code} (Error)")
-             # **** END ADDED ****
+        # Wait for threads to finish (means process streams are closed)
+        stdout_thread.join()
+        stderr_thread.join()
+
+        # Wait for process to terminate and get return code
+        process.wait()
+        return_code = process.returncode
+
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}--- User Interrupt (Ctrl+C) Detected ---{Style.RESET_ALL}")
+        interrupted = True
+        if process:
+            print(f"{Fore.YELLOW}--- Sending interrupt signal to command... ---{Style.RESET_ALL}")
+            try:
+                # Try terminating gracefully first
+                process.terminate()
+                try:
+                    # Wait briefly for termination
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    print(f"{Fore.YELLOW}--- Command did not terminate gracefully, killing... ---{Style.RESET_ALL}")
+                    process.kill() # Force kill if terminate fails
+                return_code = -99 # Special code for user interrupt
+                print(f"{Fore.YELLOW}--- Command Interrupted ---{Style.RESET_ALL}")
+            except Exception as e:
+                 print(f"{Fore.RED}Error during command interruption: {e}{Style.RESET_ALL}")
+                 return_code = -100 # Indicate error during interruption
 
     except Exception as e:
-        errors = str(e)
-        # Add error *after* the command line inside the box
-        exec_log.append(f"{Fore.RED}✗ Error executing command:{Style.RESET_ALL} {e}")
-        return_code = -1 # Indicate failure
-        
-        # **** ADDED: AI-specific log format for exception ****
-        ai_response_log.append(f"Error: Failed to execute command: {e}")
-        ai_response_log.append(f"Exit Code: {return_code} (Error)")
-        # **** END ADDED ****
+        error_lines.append(f"Error executing command: {e}")
+        return_code = -1 # Indicate general failure
+
+    finally:
+        # Ensure streams are closed if process was started
+        if process and process.stdout: process.stdout.close()
+        if process and process.stderr: process.stderr.close()
+        # Ensure threads are joined if started, even if interrupted
+        if 'stdout_thread' in locals() and stdout_thread.is_alive(): stdout_thread.join(timeout=1)
+        if 'stderr_thread' in locals() and stderr_thread.is_alive(): stderr_thread.join(timeout=1)
+
+
+    print(f"{Fore.MAGENTA}--- Live Output End ---{Style.RESET_ALL}")
+
+
+    # --- Prepare Logs ---
+    exec_log = [] # Log for the final box shown to user
+    ai_response_log = [] # Log formatted for AI consumption
+
+    exec_log.append(f"{Style.BRIGHT}Command:{Style.RESET_ALL} {command}")
+    exec_log.append(H * visible_len(f"Command: {command}"))
+    ai_response_log.append(f"Command: {command}")
+
+    # Combine collected lines
+    output = "\n".join(stdout_data["lines"])
+    errors = "\n".join(stderr_data["lines"])
+
+    if output:
+        exec_log.append(f"{Fore.CYAN}--- Final Captured Output ---{Style.RESET_ALL}")
+        exec_log.extend(output.splitlines()) # Add each line separately
+        exec_log.append(f"{Fore.CYAN}---------------------------{Style.RESET_ALL}")
+        ai_response_log.append(f"--- STDOUT ---")
+        ai_response_log.extend(output.splitlines())
+        ai_response_log.append("-------------")
+
+    if errors:
+        exec_log.append(f"{Fore.RED}--- Final Captured Errors ---{Style.RESET_ALL}")
+        exec_log.extend(errors.splitlines())
+        exec_log.append(f"{Fore.RED}---------------------------{Style.RESET_ALL}")
+        ai_response_log.append(f"--- STDERR ---")
+        ai_response_log.extend(errors.splitlines())
+        ai_response_log.append("-------------")
+
+    # Final status message
+    if interrupted:
+         status_message_user = f"{Fore.YELLOW}⚠ Command Interrupted by User (Exit Code: {return_code}){Style.RESET_ALL}"
+         status_message_ai = f"Exit Code: {return_code} (User Interrupted)"
+         box_color = Fore.YELLOW
+    elif return_code == 0:
+         status_message_user = f"{Fore.GREEN}✓ Command finished successfully (Exit Code: 0){Style.RESET_ALL}"
+         status_message_ai = f"Exit Code: 0 (Success)"
+         box_color = Fore.GREEN
+    elif return_code is None: # Should not happen often with Popen, maybe if Popen failed
+         status_message_user = f"{Fore.RED}✗ Command execution failed (Unknown Exit Code){Style.RESET_ALL}"
+         status_message_ai = f"Exit Code: Unknown (Error)"
+         box_color = Fore.RED
+    else:
+         status_message_user = f"{Fore.RED}✗ Command failed (Exit Code: {return_code}){Style.RESET_ALL}"
+         status_message_ai = f"Exit Code: {return_code} (Error)"
+         box_color = Fore.RED
+
+    exec_log.append(status_message_user)
+    ai_response_log.append(status_message_ai)
 
     # Print execution log in a box
-    box_color = Fore.RED if return_code != 0 else Fore.GREEN
-    print_boxed(f"Execution Result", "\n".join(exec_log), color=box_color)
+    print_boxed(f"Final Execution Result", "\n".join(exec_log), color=box_color)
     print("-" * 30) # Separator after box
 
     # Return both the standard result and the AI-formatted log
     return {
-        "stdout": output, 
-        "stderr": errors, 
+        "stdout": output,
+        "stderr": errors,
         "returncode": return_code,
-        "ai_log": "\n".join(ai_response_log)  # Add the AI-specific formatted log
+        "interrupted": interrupted, # Add interrupted flag
+        "ai_log": "\n".join(ai_response_log)
     }
 
 def strip_code_fences(content):
@@ -563,11 +607,11 @@ def parse_file_operations(response_text):
     """Parse the response text to extract file operations using the new format."""
     cleaned_response, _ = parse_end_response(response_text)
     cleaned_response = strip_code_fences(cleaned_response) # Pre-strip outer fences
-    
+
     file_operations = []
-    
-    # --- CREATE Operation ---
-    create_pattern = r"^====== CREATE\s+([^\n]+)\n(.*?)\n====== CEND\s*$"
+
+    # --- CREATE Operation --- Use generic END.
+    create_pattern = r"^====== CREATE\s+([^\n]+)\n(.*?)\n====== END\s*$" # Changed CEND to END
     for match in re.finditer(create_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
         filename = match.group(1).strip()
         raw_content = match.group(2)
@@ -580,33 +624,33 @@ def parse_file_operations(response_text):
             })
         else:
              print(f"{Fore.YELLOW}Warning: Skipping CREATE operation for '{filename}' because content was empty after stripping.{Style.RESET_ALL}")
-    
-    # --- New Block-Based REPLACE Operation ---
+
+    # --- New Block-Based REPLACE Operation --- Use generic END.
     # Changed pattern to use six equals (======)
-    new_replace_pattern = r"^====== REPLACE\s+([^\n]+)\n(.*?)\n====== TO\n(.*?)\n====== REND\s*$"
-    
+    new_replace_pattern = r"^====== REPLACE\s+([^\n]+)\n(.*?)\n====== TO\n(.*?)\n====== END\s*$" # Changed REND to END
+
     for match in re.finditer(new_replace_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
         filename = match.group(1).strip()
         old_code_block = match.group(2)
         new_code_block = match.group(3)
-        
+
         # Skip empty replacements
         if not old_code_block.strip() or not new_code_block.strip():
             print(f"{Fore.YELLOW}Warning: Skipping block REPLACE for '{filename}' because old or new code block was empty.{Style.RESET_ALL}")
             continue
-            
+
         if not os.path.exists(filename):
             print(f"{Fore.YELLOW}Warning: File '{filename}' does not exist for block REPLACE operation.{Style.RESET_ALL}")
             continue
-            
+
         try:
             with open(filename, 'r', encoding='utf-8') as f:
                 file_content = f.read()
-                
+
             # We need to verify that the old code block exists exactly in the file
             old_code_lines = old_code_block.splitlines()
             file_lines = file_content.splitlines()
-            
+
             # Create a special operation for block-based replacement
             file_operations.append({
                 "type": "replace_block",
@@ -615,17 +659,17 @@ def parse_file_operations(response_text):
                 "new_code": new_code_block,
                 "verified": False  # Will be set to True during apply phase if matched
             })
-                
+
         except Exception as e:
             print(f"{Fore.RED}Error reading file '{filename}' for block REPLACE: {str(e)}{Style.RESET_ALL}")
-    
-    # --- REWRITE Operation --- 
-    rewrite_pattern = r"^====== REWRITE\s+([^\n]+)\n(.*?)\n====== WEND\s*$"
+
+    # --- REWRITE Operation --- Use generic END.
+    rewrite_pattern = r"^====== REWRITE\s+([^\n]+)\n(.*?)\n====== END\s*$" # Changed WEND to END
     for match in re.finditer(rewrite_pattern, cleaned_response, re.DOTALL | re.MULTILINE | re.IGNORECASE):
         filename = match.group(1).strip()
         raw_content = match.group(2)
         # We don't need to strip code fences here because the instruction is to never use them inside
-        content = raw_content.strip() 
+        content = raw_content.strip()
         if content: # Allow empty file rewrite?
             file_operations.append({
                 "type": "rewrite",
@@ -1009,75 +1053,65 @@ def _format_content_with_lines(content):
     return content
 
 def generate_file_context(file_history):
-    """Generate a context string about files that have been created or modified."""
+    """Generate a context string listing files in the session and workspace."""
     context_lines = []
-    
+
     # Add information about files created in this session
     if file_history["created"]:
         context_lines.append(f"\n{Fore.GREEN}Files CREATED this session:{Style.RESET_ALL}")
         for file in file_history["created"]:
             context_lines.append(f"- {Fore.WHITE}{file}{Style.RESET_ALL}")
-    
+
     # Add information about files modified in this session
     if file_history["modified"]:
         context_lines.append(f"\n{Fore.YELLOW}Files MODIFIED this session:{Style.RESET_ALL}")
         for file in file_history["modified"]:
             context_lines.append(f"- {Fore.WHITE}{file}{Style.RESET_ALL}")
-    
+
     # Add information about all files in workspace
-    context_lines.append(f"\n{Fore.BLUE}Files AVAILABLE in workspace (content not loaded automatically):{Style.RESET_ALL}") # Updated title
+    context_lines.append(f"\n{Fore.BLUE}Files AVAILABLE in workspace (content NOT loaded):{Style.RESET_ALL}") # Updated title
     files_available = sorted(list(set(file_history["current_workspace"])))
     if files_available:
         for file in files_available:
             context_lines.append(f"- {Fore.WHITE}{file}{Style.RESET_ALL}")
     else:
-        context_lines.append(f"{Fore.CYAN}No files in workspace yet.{Style.RESET_ALL}")
-    
-    context_lines.append(f"\n{Fore.YELLOW}Use @mention or ASK_FOR_FILES to load file content.{Style.RESET_ALL}") # Added instruction
-    
+        context_lines.append(f"{Fore.CYAN}No files detected in workspace.{Style.RESET_ALL}") # Updated message
+
+    context_lines.append(f"\n{Fore.YELLOW}Use @mention or ASK_FOR_FILES to load specific file content.{Style.RESET_ALL}") # Emphasize loading
+
     # Add CRITICAL warning about using correct filenames and file availability
-    context_lines.append(f"\n{Fore.RED}⚠️ CRITICAL:{Style.RESET_ALL} Always use exact filenames from context.")
-    context_lines.append(f"{Fore.RED}⚠️ IMPORTANT:{Style.RESET_ALL} Files listed above are AVAILABLE, but content is only loaded on demand.") # Updated warning
-    
-    # Add the CURRENT CONTENT of only files CREATED or MODIFIED in this session
-    context_lines.append(f"\n{Style.BRIGHT}{Fore.MAGENTA}--- CURRENT FILE CONTENTS (Only Session-Modified Files) ---{Style.RESET_ALL}") # Updated title
-    files_with_content = sorted(list(set(file_history["created"] + file_history["modified"]))) # Only created/modified
-    
-    if not files_with_content:
-         context_lines.append(f"{Fore.CYAN}No files created or modified yet in this session.{Style.RESET_ALL}")
-    else:
-        for filename in files_with_content:
-            try:
-                if os.path.exists(filename):
-                    with open(filename, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        # Add file delimiters and NUMBERED content
-                        context_lines.append(f"\n{Fore.CYAN}=== START: {filename} ==={Style.RESET_ALL}")
-                        context_lines.append(f"```")
-                        # Use helper to add line numbers (now just returns content)
-                        context_lines.append(_format_content_with_lines(content))
-                        context_lines.append(f"```")
-                        context_lines.append(f"{Fore.CYAN}=== END: {filename} ==={Style.RESET_ALL}")
-                else:
-                    context_lines.append(f"\n{Fore.YELLOW}--- {filename} --- [FILE DELETED/MOVED]{Style.RESET_ALL}")
-            except Exception as e:
-                    context_lines.append(f"\n{Fore.RED}--- {filename} --- [ERROR READING: {str(e)}]{Style.RESET_ALL}")
+    context_lines.append(f"\n{Fore.RED}⚠️ CRITICAL:{Style.RESET_ALL} Always use exact filenames from the lists above.")
+    context_lines.append(f"{Fore.RED}⚠️ IMPORTANT:{Style.RESET_ALL} File content is NOT included below. You MUST use @mention or ASK_FOR_FILES to view content before modifying.") # Updated warning
+
+    # --- REMOVED SECTION THAT READ AND INCLUDED FILE CONTENTS ---
 
     # Return the formatted context string
-    context_header = f"{Style.BRIGHT}{Fore.MAGENTA}--- FILE CONTEXT (Content loaded ONLY for session-modified files) ---{Style.RESET_ALL}\n" # Updated header
-    context_footer = f"\n{Style.BRIGHT}{Fore.MAGENTA}--- END FILE CONTEXT (Use @mention or ASK_FOR_FILES to load others) ---{Style.RESET_ALL}" # Updated footer
+    context_header = f"{Style.BRIGHT}{Fore.MAGENTA}--- FILE CONTEXT (File List Only) ---{Style.RESET_ALL}\n" # Updated header
+    context_footer = f"\n{Style.BRIGHT}{Fore.MAGENTA}--- END FILE CONTEXT (Use @mention or ASK_FOR_FILES to load content) ---{Style.RESET_ALL}" # Updated footer
     return context_header + "\n".join(context_lines) + context_footer
 
-def generate_diff_report(file_lines, old_code_lines, start_idx):
-    """Generate a side-by-side diff report between file lines and old code lines."""
-    diff_lines = []
-    for i, (file_line, old_line) in enumerate(zip(file_lines[start_idx:start_idx+len(old_code_lines)], old_code_lines)):
-        if file_line.rstrip() == old_line.rstrip():
-            diff_lines.append(f"  {file_line}")
-        else:
-            diff_lines.append(f"- {file_line}")
-            diff_lines.append(f"+ {old_line}")
-    return "\n".join(diff_lines)
+def generate_diff_report(file_lines, ai_old_code_lines, best_match_start_line):
+    """Generates a diff-like report comparing AI's old code and actual file lines."""
+    report = []
+    file_slice = file_lines[best_match_start_line : best_match_start_line + len(ai_old_code_lines)]
+    diff = difflib.ndiff(file_slice, ai_old_code_lines)
+    
+    report.append("--- Diff Report (File vs. Your Attempted Old Code) ---")
+    for i, line in enumerate(diff):
+        file_line_num = best_match_start_line + i + 1
+        prefix = line[:2]
+        content = line[2:]
+        if prefix == '+ ': # Lines only in AI's code (shouldn't happen if copied?)
+            report.append(f"AI Only (?): {repr(content)}") 
+        elif prefix == '- ': # Lines only in File code
+            report.append(f"File (L{file_line_num}):  {repr(content)}")
+        elif prefix == '  ': # Lines matching
+            report.append(f"Match (L{file_line_num}): {repr(content)}")
+        elif prefix == '? ': # Difference hints
+            # report.append(f"Hint:         {content}") # Optional: Show hints 
+            pass
+    report.append("------------------------------------------------------")
+    return "\n".join(report)
 
 def retry_failed_replacements(failed_ops, client_or_model, provider, model_name, file_history, conversation_history, max_retries=2): # Updated signature
     """Attempts to automatically retry failed REPLACE operations."""
@@ -1153,7 +1187,7 @@ def retry_failed_replacements(failed_ops, client_or_model, provider, model_name,
             retry_message_parts.append(f"\n2. **CRITICAL:** Look at the `--- FILE CONTEXT ---` section provided *above*. **FIND the code block** you intended to replace.")
             retry_message_parts.append(f"3. **CRITICAL:** **COPY THE CODE *EXACTLY*** from the file context (including all indentation, whitespace, and newlines) to create the `old_code` block...")
             retry_message_parts.append(f"4. **CRITICAL:** **USE THE EXACT COPIED CODE** in the example format provided below:")
-            retry_message_parts.append(f"\n```\n====== REPLACE {filename}\n<EXACTLY COPIED CODE FROM FILE CONTEXT>\n====== TO\n<your new code>\n====== REND\n```")
+            retry_message_parts.append(f"\n```\n====== REPLACE {filename}\n<EXACTLY COPIED CODE FROM FILE CONTEXT>\n====== TO\n<your new code>\n====== END\n```")
 
             for op in block_replace_ops:
                 filename = op['filename']
@@ -1164,9 +1198,9 @@ def retry_failed_replacements(failed_ops, client_or_model, provider, model_name,
                 if diff_report:
                     retry_message_parts.append(f"  * Diff Report (showing mismatch):\n```diff\n{diff_report}\n```")
                 # Add old instructions as context if needed, but emphasize using the fetched code
-                # retry_message_parts.append(f"  * Use this format **using the ACTUAL code provided above**:\n```\n====== REPLACE {filename}\n<ACTUAL code from ACTUAL CODE FROM FILE section>\n====== TO\n<your new code>\n====== REND\n```")
+                # retry_message_parts.append(f"  * Use this format **using the ACTUAL code provided above**:\n```\n====== REPLACE {filename}\n<ACTUAL code from ACTUAL CODE FROM FILE section>\n====== TO\n<your new code>\n====== END\n```")
         
-        retry_message_parts.append("\n\n**--- FINAL COMMAND ---**\nProvide ONLY the corrected `====== REPLACE ... REND` command(s) below, using the ACTUAL file code provided above for the `old_code` part.\n**DO NOT** ask for files.\n**DO NOT** include explanations.\n**DO NOT** use `[END]`.")
+        retry_message_parts.append("\n\n**--- FINAL COMMAND ---**\nProvide ONLY the corrected `====== REPLACE ... END` command(s) below, using the ACTUAL file code provided above for the `old_code` part.\n**DO NOT** ask for files.\n**DO NOT** include explanations.\n**DO NOT** use `[END]`.")
         
         # --- Simplified and Focused Retry Prompt --- 
         retry_message = "\n".join(retry_message_parts)
@@ -1466,6 +1500,11 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
         if os.path.isfile(file) and not file.startswith('.') and not file.startswith('__pycache__'):
             file_history["current_workspace"].append(file)
     
+    # --- Load Initial and Reminder System Prompts --- Start
+    initial_system_prompt = get_system_prompt(is_reminder=False)
+    reminder_system_prompt = get_system_prompt(is_reminder=True)
+    # --- Load Initial and Reminder System Prompts --- End
+
     # Check if we have previous chat history to load
     previous_conversation = []
     if os.path.exists(history_file) and os.path.getsize(history_file) > 0:
@@ -1513,7 +1552,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
     # Note: We don't need a separate completer for history; AutoSuggestFromHistory works alongside custom completers.
 
     # Keep track of conversation to maintain context
-    conversation_history = []
+    # conversation_history = [] # Already initialized above
     # Store context that needs to be prepended *outside* the AI's direct turn
     pending_context_injection = ""
 
@@ -1523,8 +1562,11 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
         pass
     # --- Add Custom Exception Class --- End
 
+    turn_count = 0 # Keep track of turns for system prompt logic
+
     while True:
-        try:
+        main_loop_interrupted = False # Flag to indicate if main loop caught interrupt
+        try: # Outer try for main loop KeyboardInterrupt
             # --- Prepend any pending context (e.g., from user file selection or auto-fix) ---
             current_context_for_model = pending_context_injection
             pending_context_injection = "" # Clear after use
@@ -1532,7 +1574,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
             # Add separator
             print(f"\n{Fore.BLUE}{H * (min(os.get_terminal_size().columns, 80))}{Style.RESET_ALL}")
 
-            # --- Get User Input --- 
+            # --- Get User Input ---
             # (Only prompt user if there isn't context waiting from auto-fix/file selection)
             if not current_context_for_model:
                 # ... (Existing user input prompt logic remains here) ...
@@ -1554,33 +1596,42 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                      conversation_history.append({"role": "user", "content": user_input_for_history})
                 # Add user input (after mentions processed) to the context for this turn
                 current_context_for_model += user_input_for_model
+                turn_count += 1 # Increment turn count on new user input
+
+            # --- Determine Which System Prompt to Use --- Start
+            # Use initial prompt on first turn, reminder prompt otherwise
+            active_system_prompt = reminder_system_prompt if turn_count > 1 else initial_system_prompt
+            # --- Determine Which System Prompt to Use --- End
 
             # --- Prepare Prompt for AI ---
-            system_prompt = get_system_prompt()
+            # system_prompt = get_system_prompt() # Replaced by active_system_prompt
             file_context_for_prompt = generate_file_context(file_history)
 
-            # --- Format History for Model --- 
+            # --- Format History for Model ---
             # ... (Existing history formatting logic for Google/OpenRouter) ...
             history_for_model = []
             if provider == "google":
                  combined_history = []
-                 temp_history = conversation_history[-10:] 
+                 temp_history = conversation_history[-10:] # Limit history context
                  for entry in temp_history:
                       role = entry['role']
                       if role in ['user', 'model']:
+                          # Combine role and content
                           combined_history.append({"role": role, "parts": [entry['content']]})
                  history_for_model = combined_history 
             elif provider == "openrouter":
-                 openai_messages = [{"role": "system", "content": system_prompt}]
-                 temp_history = conversation_history[-10:] 
+                 # Always start with the active system prompt for OpenRouter
+                 openai_messages = [{"role": "system", "content": active_system_prompt}]
+                 temp_history = conversation_history[-10:] # Limit history context
                  for entry in temp_history:
                       role = entry['role']
                       if role == 'user':
                           openai_messages.append({"role": "user", "content": entry['content']})
                       elif role == 'model':
+                           # Map 'model' role from history to 'assistant' for OpenAI API
                            openai_messages.append({"role": "assistant", "content": entry['content']})
                  history_for_model = openai_messages 
-            
+
             # Display history in the console (unified format)
             history_to_display = min(10, len(conversation_history))
             # ... (Existing history display formatting) ...
@@ -1598,15 +1649,22 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                  print(f"{Style.BRIGHT}{Fore.MAGENTA}--- CONVERSATION HISTORY (Last {history_to_display}) ---{Style.RESET_ALL}\n" + "\n\n".join(prompt_history_formatted))
                  print(f"\n{Style.BRIGHT}{Fore.MAGENTA}--- END HISTORY ---{Style.RESET_ALL}")
 
-            # --- Construct Final Prompt/Messages --- 
+            # --- Construct Final Prompt/Messages ---
             # ... (Existing provider-specific prompt/message construction) ...
             generation_request_content = [] # For google
             if provider == "google":
-                 prompt_string_for_google = "\n\n".join([system_prompt, file_context_for_prompt, current_context_for_model if current_context_for_model else ""])
-                 generation_request_content = history_for_model + [{"role": "user", "parts": [current_context_for_model if current_context_for_model else "Continue."]}]
+                 # Prepend the system prompt + file context to the current user input/context
+                 # Note: Google API prefers system instructions within the user message or history, not a separate system role usually
+                 prompt_string_for_google = "\n\n".join([active_system_prompt, file_context_for_prompt, current_context_for_model if current_context_for_model else "Continue."])
+
+                 # Construct content for generate_content API call
+                 generation_request_content = history_for_model + [{"role": "user", "parts": [prompt_string_for_google]}] # Include system/file context here
             elif provider == "openrouter":
-                 full_user_content = f"{file_context_for_prompt}\n\n{current_context_for_model}"
+                 # System prompt is already the first message in history_for_model
+                 # Append the file context and current user input/context as the latest user message
+                 full_user_content = f"{file_context_for_prompt}\n\n{current_context_for_model if current_context_for_model else 'Continue.'}"
                  history_for_model.append({"role": "user", "content": full_user_content})
+
 
             # --- Model Interaction Loop (Multi-Turn) ---
             all_responses_this_turn = []
@@ -1618,7 +1676,11 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
 
             print(f"\n{Style.DIM}--- CodAgent Thinking ---{Style.RESET_ALL}")
 
-            while not is_end_of_turn and not ask_for_files_detected:
+            # --- Inner loop needs adjustment for system prompt injection ---
+            # The prompt is constructed *before* this loop now.
+            # We might need to reconstruct parts if it continues.
+
+            while not is_end_of_turn and not ask_for_files_detected and not ask_to_user_detected: # Added ask_to_user check
                 print(f"\n{Style.BRIGHT}{Fore.GREEN}>>> AI Response Segment {len(all_responses_this_turn) + 1} >>>{Style.RESET_ALL}")
                 current_segment_text = ""
                 stream_error_occurred = False
@@ -1629,6 +1691,8 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                     # --- Call Correct API --- Start
                     if provider == "google":
                         # Pass the potentially updated generation_request_content
+                        # Ensure generation_request_content is correctly formed for subsequent calls in the loop
+                        # If the loop continues, the last model response needs adding, and a "CONTINUE" prompt
                         response_stream = client_or_model.generate_content(generation_request_content, stream=True)
                         for chunk in response_stream:
                              try:
@@ -1648,6 +1712,8 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                              except Exception as e_text_access: print(f"\n{Fore.RED}Error processing Google stream chunk text: {e_text_access}{Style.RESET_ALL}", flush=True)
                     elif provider == "openrouter":
                          # Pass the potentially updated history_for_model
+                         # Ensure history_for_model is correctly formed for subsequent calls in the loop
+                         # If the loop continues, the last model response needs adding, and a "CONTINUE" prompt
                          response_stream = client_or_model.chat.completions.create(model=model_name, messages=history_for_model, stream=True)
                          for chunk in response_stream:
                               if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
@@ -1672,7 +1738,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                      stream_error_occurred = True
 
                 # --- Process Tags and Execute Commands PER SEGMENT --- Start
-                segment_for_processing = current_segment_text 
+                segment_for_processing = current_segment_text
                 segment_to_log = current_segment_text # Store original segment for logging
 
                 # 1. Check for ====== ASK_FOR_FILES first
@@ -1684,9 +1750,11 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                         files_to_ask_user_for = extracted_files
                         segment_to_log = segment_without_ask_tag # Log text without the tag
                         all_responses_this_turn.append(segment_to_log)
-                        conversation_history.append({"role": "model", "content": segment_to_log}) # Add AI msg asking for files
+                        # Ensure model response is added to history before breaking
+                        if segment_to_log.strip():
+                            conversation_history.append({"role": "model", "content": segment_to_log})
                         break # Break inner loop immediately to handle ASK prompt
-                
+
                 # 1.5 Check for ====== ASK_TO_USER
                 if not stream_error_occurred and not ask_for_files_detected:
                     extracted_question, segment_without_ask_tag = parse_ask_to_user(segment_for_processing)
@@ -1696,10 +1764,12 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                         user_question = extracted_question
                         segment_to_log = segment_without_ask_tag # Log text without the tag
                         all_responses_this_turn.append(segment_to_log)
-                        conversation_history.append({"role": "model", "content": segment_to_log}) # Add AI msg asking question
+                        # Ensure model response is added to history before breaking
+                        if segment_to_log.strip():
+                            conversation_history.append({"role": "model", "content": segment_to_log})
                         break # Break inner loop immediately to handle question
 
-                # 2. Check for [END] tag 
+                # 2. Check for [END] tag (Final end-of-turn signal)
                 if not stream_error_occurred and not ask_for_files_detected and not ask_to_user_detected:
                      parsed_segment, is_end_from_tag = parse_end_response(segment_for_processing)
                      if is_end_from_tag:
@@ -1707,27 +1777,28 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                           segment_to_log = parsed_segment # Log text without the tag
                           is_end_of_turn = True # Mark to terminate loop after this segment's actions
 
-                # Log the AI's segment response (potentially without tags)
+                # Log the AI's segment response (potentially without tags) BEFORE actions
                 if segment_to_log.strip() and not stream_error_occurred:
                     all_responses_this_turn.append(segment_to_log)
-                    # Add model response to history *before* execution results for clarity
                     conversation_history.append({"role": "model", "content": segment_to_log})
                 elif stream_error_occurred:
                     # Already logged error, don't add failed segment text
-                    pass 
+                    pass
 
-                # --- Execute File Operations for this Segment --- 
-                if not stream_error_occurred and not ask_for_files_detected:
+                # --- Execute File Operations for this Segment ---
+                if not stream_error_occurred and not ask_for_files_detected and not ask_to_user_detected: # Added ask_to_user check
                     segment_file_ops = parse_file_operations(segment_for_processing)
                     if segment_file_ops:
                         print("\n" + "="*5 + f" File Operations Proposed (Segment {len(all_responses_this_turn)}) " + "="*5)
                         if preview_changes(segment_file_ops):
                             segment_apply_result = apply_changes(segment_file_ops)
                             # Update system history with results
-                            op_summary_lines_segment = [f"File Operations Status (Segment {len(all_responses_this_turn)}):"]
+                            op_summary_lines_segment = [f"File Operations Status (Segment {len(all_responses_this_turn)})]:"]
                             if segment_apply_result.get('successful'): op_summary_lines_segment.append(f"  {Fore.GREEN}Successful ({len(segment_apply_result['successful'])}):{Style.RESET_ALL} {', '.join(list({op['filename'] for op in segment_apply_result['successful']}))}")
                             if segment_apply_result.get('failed'): op_summary_lines_segment.append(f"  {Fore.RED}Failed ({len(segment_apply_result['failed'])}):{Style.RESET_ALL} {', '.join(list({op['filename'] for op in segment_apply_result['failed']}))}")
-                            conversation_history.append({"role": "system", "content": "\n".join(op_summary_lines_segment)})
+                            # Don't add to conversation_history if it's empty
+                            if len(op_summary_lines_segment) > 1:
+                                conversation_history.append({"role": "system", "content": "\n".join(op_summary_lines_segment)})
                             # Update internal file state tracker
                             for op in segment_apply_result.get("successful", []):
                                 norm_filename = os.path.normpath(op["filename"])
@@ -1736,7 +1807,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                     if norm_filename not in file_history["created"]: file_history["created"].append(norm_filename)
                                     if norm_filename not in file_history["current_workspace"]: file_history["current_workspace"].append(norm_filename)
                                     if norm_filename in file_history["modified"]: file_history["modified"].remove(norm_filename)
-                                elif op["type"] in ["replace_lines", "replace_block"]: # Updated to include replace_block
+                                elif op["type"] in ["rewrite", "replace_block"]: # Added rewrite and replace_block
                                     if norm_filename not in file_history["modified"] and norm_filename not in file_history["created"]: file_history["modified"].append(norm_filename)
                                     if norm_filename not in file_history["current_workspace"]: file_history["current_workspace"].append(norm_filename)
 
@@ -1749,12 +1820,12 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                             if failed_block_ops:
                                 print(f"\n{Fore.YELLOW}--- Initiating Auto-Retry for {len(failed_block_ops)} Failed Block Replacements ---{Style.RESET_ALL}")
                                 retry_result = retry_failed_replacements(
-                                    failed_block_ops, 
-                                    client_or_model, 
-                                    provider, 
-                                    model_name, 
-                                    file_history, 
-                                    conversation_history # Pass current history 
+                                    failed_block_ops,
+                                    client_or_model,
+                                    provider,
+                                    model_name,
+                                    file_history,
+                                    conversation_history # Pass current history
                                 )
                                 # Update successful ops list and file history with newly successful retries
                                 if retry_result.get('newly_successful'):
@@ -1763,7 +1834,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                         norm_filename = os.path.normpath(op["filename"])
                                         if norm_filename not in file_history["modified"] and norm_filename not in file_history["created"]:
                                              file_history["modified"].append(norm_filename)
-                                        if norm_filename not in file_history["current_workspace"]: 
+                                        if norm_filename not in file_history["current_workspace"]:
                                              file_history["current_workspace"].append(norm_filename)
                                     # NOW extend the list used for subsequent steps
                                     successful_ops_this_segment.extend(retry_result['newly_successful'])
@@ -1779,7 +1850,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                             if successful_ops_this_segment:
                                 # ... (Existing syntax check logic) ...
                                 python_files_changed = [op['filename'] for op in successful_ops_this_segment if op['filename'].endswith('.py')]
-                                syntax_errors_found = {} 
+                                syntax_errors_found = {}
                                 if python_files_changed:
                                     print(f"\n{Fore.CYAN}--- Running Syntax Checks on: {', '.join(python_files_changed)} ---{Style.RESET_ALL}")
                                     for filename in python_files_changed:
@@ -1799,16 +1870,17 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                     updated_file_context = generate_file_context(file_history)
                                     error_details = "\n".join([f"File: `{fname}`\nError:\n```\n{err}\n```" for fname, err in syntax_errors_found.items()])
                                     affected_filenames = list(syntax_errors_found.keys())
-                                    auto_fix_prompt = f"""{updated_file_context}\n\n{Style.BRIGHT}{Fore.RED}SYSTEM CHECK - SYNTAX ERROR:{Style.RESET_ALL} The following syntax error(s) were detected in the file(s) you just modified:\n\n{error_details}\n\n**Your Task:** Review the errors and the code context above. Provide `======= REPLACE` command(s) to fix **only these specific errors**. Do NOT use `[END]`."""
+                                    # Use the reminder prompt structure for auto-fix
+                                    auto_fix_prompt = f"""{reminder_system_prompt}\n\n{updated_file_context}\n\n{Style.BRIGHT}{Fore.RED}SYSTEM CHECK - SYNTAX ERROR:{Style.RESET_ALL} The following syntax error(s) were detected in the file(s) you just modified:\n\n{error_details}\n\n**Your Task:** Review the errors and the code context above. Provide `======= REPLACE ... END` command(s) to fix **only these specific errors**. Do NOT use `[END]`."""
                                     pending_context_injection = auto_fix_prompt
-                                    conversation_history.append({"role": "system", "content": f"Auto-fix check initiated due to syntax errors in: {', '.join(affected_filenames)}"})                 
+                                    conversation_history.append({"role": "system", "content": f"Auto-fix check initiated due to syntax errors in: {', '.join(affected_filenames)}"})
                                     raise AutoFixRequired() # Use exception to break inner loop and continue outer
                         else:
                             print(f"{Fore.YELLOW}✗ File operations skipped by user (segment {len(all_responses_this_turn)}).{Style.RESET_ALL}")
                             conversation_history.append({"role": "system", "content": f"User skipped proposed file operations (segment {len(all_responses_this_turn)})."})
-                
-                # --- Execute Terminal Commands for this Segment --- 
-                if not stream_error_occurred and not ask_for_files_detected:
+
+                # --- Execute Terminal Commands for this Segment ---
+                if not stream_error_occurred and not ask_for_files_detected and not ask_to_user_detected: # Added ask_to_user check
                     segment_terminal_commands = parse_terminal_commands(segment_for_processing)
                     if segment_terminal_commands:
                         # ... (Existing terminal command preview, confirmation, execution logic) ...
@@ -1817,38 +1889,62 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                         print("-" * 30)
                         confirm_terminal = input(f"{Style.BRIGHT}{Fore.CYAN}Execute these commands? (y/n): {Style.RESET_ALL}").lower().strip()
                         if confirm_terminal.startswith('y'):
-                            print(f"{Fore.YELLOW}Executing commands...{Style.RESET_ALL}")
+                            # Execute commands one by one
                             for command in segment_terminal_commands:
+                                # execute_terminal_command now handles live output and its own Ctrl+C
                                 result = execute_terminal_command(command)
                                 executed_command_results.append({"command": command, "result": result})
-                            # Update system history with results
-                            cmd_summary_lines_segment = [f"Terminal Execution Results (Segment {len(all_responses_this_turn)}):"]
+                                # Check if the command execution itself was interrupted
+                                if result.get("interrupted"):
+                                    print(f"{Fore.YELLOW}Command '{command}' was interrupted. Stopping further commands in this segment.{Style.RESET_ALL}")
+                                    # Add a note to history about the interruption stopping the sequence
+                                    conversation_history.append({"role": "system", "content": f"User interrupted command '{command}'. Subsequent commands in this segment were skipped."})
+                                    break # Stop executing commands in this segment
+
+                            # --- Update system history with results --- Start
+                            cmd_summary_lines_segment = [f"Terminal Execution Results (Segment {len(all_responses_this_turn)})]:"]
+                            ai_logs_for_model = [] # Collect detailed logs for AI
+
                             for res in executed_command_results:
-                                # ... (status formatting) ...
-                                status = f"{Fore.GREEN}✓ SUCCESS{Style.RESET_ALL}" if res['result']['returncode'] == 0 else f"{Fore.RED}✗ FAILED (Code: {res['result']['returncode']}){Style.RESET_ALL}"
-                                cmd_summary_lines_segment.append(f"`{res['command']}`: {status}")
-                                if res['result']['stdout']: cmd_summary_lines_segment.append(f"  Output: {res['result']['stdout'][:100]}{'...' if len(res['result']['stdout']) > 100 else ''}")
-                                if res['result']['stderr']: cmd_summary_lines_segment.append(f"  {Fore.RED}Errors:{Style.RESET_ALL} {res['result']['stderr'][:100]}{'...' if len(res['result']['stderr']) > 100 else ''}")
-                            
-                            # Add the original summary to conversation history for display purposes
-                            conversation_history.append({"role": "system", "content": "\n".join(cmd_summary_lines_segment)})
-                            
-                            # ADDED: Also add the AI-specific detailed log directly to the model for better context
-                            for res in executed_command_results:
-                                if 'ai_log' in res['result']:
-                                    # Add a separate entry for each command's detailed output in clean format
-                                    # This makes it clear to the AI what each command returned
-                                    ai_log_entry = f"```\n{res['result']['ai_log']}\n```"
-                                    # Change from system role to user role to make it more visible to the AI
-                                    conversation_history.append({"role": "user", "content": f"Terminal command output:\n{ai_log_entry}"})
-                                    # Add model acknowledgment to force recognition of the output
-                                    conversation_history.append({"role": "model", "content": "I've received the terminal output above. I'll analyze it now."})
-                            
-                            print(f"{Fore.GREEN}Finished executing segment commands.{Style.RESET_ALL}")
+                                cmd = res['command']
+                                cmd_result = res['result']
+                                status = ""
+                                # Format status based on return code and interrupted flag
+                                if cmd_result.get('interrupted'):
+                                     status = f"{Fore.YELLOW}⚠ INTERRUPTED (Code: {cmd_result['returncode']}){Style.RESET_ALL}"
+                                elif cmd_result['returncode'] == 0:
+                                     status = f"{Fore.GREEN}✓ SUCCESS (Code: 0){Style.RESET_ALL}"
+                                else:
+                                     status = f"{Fore.RED}✗ FAILED (Code: {cmd_result['returncode']}){Style.RESET_ALL}"
+
+                                cmd_summary_lines_segment.append(f"`{cmd}`: {status}")
+                                # Only show output/error snippets if not interrupted (live output was already shown)
+                                if not cmd_result.get('interrupted'):
+                                     if cmd_result['stdout']: cmd_summary_lines_segment.append(f"  Output: {cmd_result['stdout'][:100]}{'...' if len(cmd_result['stdout']) > 100 else ''}")
+                                     if cmd_result['stderr']: cmd_summary_lines_segment.append(f"  {Fore.RED}Errors:{Style.RESET_ALL} {cmd_result['stderr'][:100]}{'...' if len(cmd_result['stderr']) > 100 else ''}")
+
+                                # Store the detailed AI log for sending back to the model
+                                if 'ai_log' in cmd_result:
+                                    ai_logs_for_model.append(cmd_result['ai_log'])
+
+                            # Add summary to conversation history (for system tracking/user visibility)
+                            if len(cmd_summary_lines_segment) > 1:
+                                conversation_history.append({"role": "system", "content": "\n".join(cmd_summary_lines_segment)})
+
+                            # Add detailed logs back to the AI as user input (so it reacts to them)
+                            if ai_logs_for_model:
+                                combined_ai_log = "\n\n".join([f"```\n{log}\n```" for log in ai_logs_for_model])
+                                conversation_history.append({"role": "user", "content": f"Terminal command output(s):\n{combined_ai_log}"})
+                                # Add acknowledgment to confirm receipt
+                                conversation_history.append({"role": "model", "content": "Received terminal output(s). Analyzing now."})
+
+                            # --- Update system history with results --- End
+
+                            print(f"{Fore.GREEN}Finished processing segment commands.{Style.RESET_ALL}")
                         else:
                             print(f"{Fore.YELLOW}✗ Terminal commands skipped by user (segment {len(all_responses_this_turn)}).{Style.RESET_ALL}")
                             conversation_history.append({"role": "system", "content": f"User skipped proposed terminal commands (segment {len(all_responses_this_turn)})."})
-                
+
                 # --- Process Tags and Execute Commands PER SEGMENT --- End
 
                 # Check if inner loop should terminate based on END tag
@@ -1856,26 +1952,61 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                      print(f"\n{Style.DIM}--- CodAgent Finished Turn ([END] detected in segment {len(all_responses_this_turn)}) ---{Style.RESET_ALL}")
                      break # Break the inner while loop
 
-                # Prepare for next segment (if loop wasn't broken by END, ASK, or AutoFix)
+                # --- Prepare for next segment (if loop wasn't broken by END, ASK, or AutoFix) --- Start
                 print(f"\n{Style.DIM}--- CodAgent Continuing (More segments expected) ---{Style.RESET_ALL}")
-                # Update history structure for the next AI call with a CONTINUE prompt
+                # The next model call needs the latest context, including the reminder prompt,
+                # file context, conversation history, and the "CONTINUE" instruction.
+                # We need to reconstruct the input for the API call.
+
+                # Update history structures before reconstructing the API call input
+                # The model's last response (segment_to_log) was already added to conversation_history
+
+                # Re-generate file context as it might have changed due to actions
+                file_context_for_prompt = generate_file_context(file_history)
+
+                # Reconstruct the history for the next API call
                 if provider == "google":
-                    # generation_request_content was used for the *last* call, 
-                    # need to append the *result* (segment_to_log) and the new user prompt
-                    generation_request_content.append({"role": "model", "parts": [segment_to_log]}) 
-                    generation_request_content.append({"role": "user", "parts": ["CONTINUE."]})
+                    # Rebuild history for Google
+                    temp_history = conversation_history[-10:] # Limit history again
+                    history_for_google_continue = []
+                    for entry in temp_history:
+                        role = entry['role']
+                        if role in ['user', 'model']:
+                            history_for_google_continue.append({"role": role, "parts": [entry['content']]})
+
+                    # Construct the new user prompt string including reminder, files, and "CONTINUE"
+                    prompt_string_for_google_continue = "\n\n".join([
+                        reminder_system_prompt, # Always use reminder after first turn
+                        file_context_for_prompt,
+                        "CONTINUE."
+                    ])
+                    # Update generation_request_content for the *next* iteration
+                    generation_request_content = history_for_google_continue + [{"role": "user", "parts": [prompt_string_for_google_continue]}]
+
                 elif provider == "openrouter":
-                    # history_for_model was used for the *last* call
-                    # need to append the *result* (segment_to_log) and the new user prompt
-                    history_for_model.append({"role": "assistant", "content": segment_to_log})
-                    history_for_model.append({"role": "user", "content": "CONTINUE."})
+                    # Rebuild history for OpenRouter
+                    temp_history = conversation_history[-10:] # Limit history again
+                    history_for_openai_continue = [{"role": "system", "content": reminder_system_prompt}] # Start with reminder
+                    for entry in temp_history:
+                        role = entry['role']
+                        if role == 'user':
+                            history_for_openai_continue.append({"role": "user", "content": entry['content']})
+                        elif role == 'model':
+                           history_for_openai_continue.append({"role": "assistant", "content": entry['content']})
+
+                    # Construct the new user prompt string including file context and "CONTINUE"
+                    user_content_for_openai_continue = f"{file_context_for_prompt}\n\nCONTINUE."
+                    # Update history_for_model for the *next* iteration
+                    history_for_model = history_for_openai_continue + [{"role": "user", "content": user_content_for_openai_continue}]
+                # --- Prepare for next segment --- End
+
 
             # --- End of AI Turn / Inner Segment Loop (`while not is_end_of_turn...`) ---
 
             # --- Handle ASK_FOR_FILES Interaction (Happens if inner loop broken by ask_for_files_detected) ---
             if ask_for_files_detected:
                 print(f"\n{Fore.CYAN}CodAgent is asking for the following files:{Style.RESET_ALL}")
-                # ... (Existing user file selection logic) ...
+                # ... (Existing user file selection logic - no changes needed here) ...
                 files_found = []
                 file_options = []
                 for i, filepath in enumerate(files_to_ask_user_for):
@@ -1906,7 +2037,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                                             temp_selected_context += f"\n{Fore.CYAN}=== {selected_filepath} ==={Style.RESET_ALL}\n" # Removed (Line Numbered)
                                             temp_selected_context += f"```\n{file_content}\n```\n" # Use raw file_content
                                             print(f"{Fore.GREEN}  ✓ Added {selected_filepath}{Style.RESET_ALL}")
-                                            
+
                                             # Add file to tracking lists if not already there
                                             norm_filepath = os.path.normpath(selected_filepath)
                                             if norm_filepath not in file_history["current_workspace"]:
@@ -1936,12 +2067,12 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
             # --- Handle ASK_TO_USER Interaction ---
             elif ask_to_user_detected and user_question:
                 print(f"\n{Fore.CYAN}CodAgent is asking you a question:{Style.RESET_ALL}")
-                
+
                 # Format the question based on format type
                 question_format = user_question["format"]
                 user_response = ""
                 response_to_log = ""
-                
+
                 # Display the question with appropriate formatting
                 if question_format == "normal":
                     question_text = user_question["question"]
@@ -1949,7 +2080,7 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                     print(f"{Fore.YELLOW}Enter your response:{Style.RESET_ALL}")
                     user_response = input(f"{Style.BRIGHT}{Fore.CYAN}Response: {Style.RESET_ALL}").strip()
                     response_to_log = f"[Response to question] {user_response}" if user_response else "[No response provided to question]"
-                    
+
                 elif question_format == "options":
                     # Handle options format using the options list
                     options = user_question["options"]
@@ -1958,8 +2089,8 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                         print(f"{Fore.GREEN}{i}.{Style.RESET_ALL} {option}")
                     print(f"{Fore.YELLOW}Enter your selection number:{Style.RESET_ALL}") # Clarified prompt
                     user_response_num_str = input(f"{Style.BRIGHT}{Fore.CYAN}Selection: {Style.RESET_ALL}").strip()
-                    
-                    # --- New Logic: Convert number to text --- 
+
+                    # --- New Logic: Convert number to text ---
                     try:
                         selected_index = int(user_response_num_str) - 1
                         if 0 <= selected_index < len(options):
@@ -1974,42 +2105,43 @@ def chat_with_model(client_or_model, provider, model_name): # Modified signature
                         print(f"{Fore.RED}Invalid input (not a number). Asking AI to clarify.{Style.RESET_ALL}")
                         response_to_log = f"[User provided non-numeric input: '{user_response_num_str}'. Please clarify selection.]"
                     # --- End New Logic ---
-                    
+
                 elif question_format == "yesno":
                     question_text = user_question["question"]
                     print(f"\n{Fore.GREEN}{question_text} (yes/no){Style.RESET_ALL}")
                     print(f"{Fore.YELLOW}Enter your response:{Style.RESET_ALL}")
                     user_response = input(f"{Style.BRIGHT}{Fore.CYAN}Response: {Style.RESET_ALL}").strip()
                     response_to_log = f"[Response to yes/no question] {user_response}" if user_response else "[No response provided to question]"
-                
-                # Add the user's response (or formatted selection) to the conversation history
-                # response_to_log = f"[Response to question] {user_response}" if user_response else "[No response provided to question]"
-                conversation_history.append({"role": "user", "content": response_to_log})
-                
-                # --- CORRECTED LOGIC --- 
-                # Store the response to be used as input for the AI's continuation
-                pending_context_injection = response_to_log 
 
-            # --- Auto-Fix was Triggered --- 
+                # Add the user's response (or formatted selection) to the conversation history
+                conversation_history.append({"role": "user", "content": response_to_log})
+
+                # Store the response to be used as input for the AI's continuation
+                pending_context_injection = response_to_log
+                continue # Continue the main loop immediately with the user's response
+
+            # --- Auto-Fix was Triggered ---
             # Handled by catching AutoFixRequired exception below
 
-            # --- Redundant code blocks after the loop are now removed/commented --- 
+            # --- Redundant code blocks after the loop are now removed/commented ---
 
         except AutoFixRequired: # Catch the custom exception
              print(f"{Fore.CYAN}--- Auto-fix required, continuing loop ---{Style.RESET_ALL}")
+             # Make sure turn_count doesn't increment again if auto-fix triggers immediately
              continue # Continue the main `while True` loop immediately
-        except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}Interrupt received. Exiting...{Style.RESET_ALL}")
-            break # Exit main loop on Ctrl+C
+        except KeyboardInterrupt: # Catch Ctrl+C ONLY if it happens *outside* execute_terminal_command
+            print(f"\n{Fore.YELLOW}Interrupt received outside command execution. Exiting...{Style.RESET_ALL}")
+            main_loop_interrupted = True # Set flag to break outer loop
         except Exception as e:
             print(f"\n{Back.RED}{Fore.WHITE} UNEXPECTED ERROR: {e} {Style.RESET_ALL}")
             import traceback
             traceback.print_exc()
             conversation_history.append({"role": "system", "content": f"An unexpected error occurred: {e}\n{traceback.format_exc()}"})
 
-# --- Add Custom Exception Class (Moved before chat_with_model) ---
-# class AutoFixRequired(Exception):
-#     ...
+        if main_loop_interrupted:
+             break # Break the main while loop if flag is set
+
+    # ... (end of chat_with_model) ...
 
 def generate_diff_report(file_lines, ai_old_code_lines, best_match_start_line):
     """Generates a diff-like report comparing AI's old code and actual file lines."""
